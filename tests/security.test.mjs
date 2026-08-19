@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { applySecurityHeaders, createContentSecurityPolicy } from "../lib/security-headers.ts";
 import { assertSameOrigin } from "../server/http.ts";
@@ -32,3 +33,13 @@ test("accepts same-origin mutations and rejects cross-origin requests", () => {
   })), /Cross-origin request rejected/u);
 });
 
+test("transfer metadata GET stays public while DELETE is origin-protected", () => {
+  const source = readFileSync(new URL("../app/api/transfers/[id]/route.ts", import.meta.url), "utf8");
+  const getHandler = source.slice(source.indexOf("export async function GET"), source.indexOf("export async function DELETE"));
+  const deleteHandler = source.slice(source.indexOf("export async function DELETE"));
+
+  assert.doesNotMatch(getHandler, /assertSameOrigin\(request\)/u);
+  assert.doesNotMatch(getHandler, /delete-transfer/u);
+  assert.match(deleteHandler, /assertSameOrigin\(request\)/u);
+  assert.match(deleteHandler, /enforceRateLimit\(request, "delete-transfer", 60\)/u);
+});

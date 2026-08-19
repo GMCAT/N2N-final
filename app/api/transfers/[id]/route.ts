@@ -6,8 +6,6 @@ type Context = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, { params }: Context) {
   try {
-    assertSameOrigin(request);
-    await enforceRateLimit(request, "delete-transfer", 60);
     const { id } = await params;
     const transfer = await getTransfer(id);
     if (!transfer || transfer.status !== "ready" || transfer.expires_at <= Date.now()) {
@@ -21,6 +19,8 @@ export async function GET(_request: Request, { params }: Context) {
 
 export async function DELETE(request: Request, { params }: Context) {
   try {
+    assertSameOrigin(request);
+    await enforceRateLimit(request, "delete-transfer", 60);
     const { id } = await params;
     const transfer = await getTransfer(id);
     if (!transfer) return noStoreJson({ deleted: true });
