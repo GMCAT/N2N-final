@@ -9,6 +9,10 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
+    "predeploy:cloudflare": "node scripts/check-cloudflare-config.mjs",
+    "deploy:cloudflare": "wrangler deploy --config dist/server/wrangler.json",
+    "db:migrate:production": "wrangler d1 migrations apply n2n-production --remote",
+    "cf:types": "wrangler types",
     "test": "npm run build && node --test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"

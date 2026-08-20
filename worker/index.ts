@@ -8,7 +8,7 @@ import { cleanupRateLimits } from "../server/rate-limit";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
-  FILES: R2Bucket;
+  FILES?: R2Bucket;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -61,8 +61,10 @@ const worker = {
     const headers = applySecurityHeaders(new Headers(response.headers), policy);
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
-  async scheduled(event: ScheduledEvent, _env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(cleanupExpiredTransfers(event.scheduledTime));
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // The live P2P product does not require R2. Keep legacy encrypted-transfer
+    // cleanup available only when an operator explicitly adds a FILES binding.
+    if (env.FILES) ctx.waitUntil(cleanupExpiredTransfers(event.scheduledTime));
     ctx.waitUntil(cleanupRateLimits(event.scheduledTime - 2 * 60 * 60 * 1000));
   },
 };
