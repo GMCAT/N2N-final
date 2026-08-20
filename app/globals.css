@@ -164,6 +164,7 @@ button, .package-picker, .drop-zone { -webkit-tap-highlight-color: transparent; 
 .file-preview > span { padding: .45rem; background: var(--ink); color: white; font: 800 .62rem/1 var(--font-geist-mono), monospace; }
 .file-preview strong, .file-preview small { display: block; }
 .file-preview small { margin-top: .2rem; color: rgba(23,23,15,.6); }
+.file-preview .large-file-warning { color: #b3371f; font-weight: 850; }
 .file-preview button { border: 0; background: transparent; font-size: 1.4rem; cursor: pointer; }
 .room-error { margin: 0 1rem 1rem; }
 .transfer-limit-note { margin: -.3rem 1rem 1rem; color: rgba(23,23,15,.58); font: 650 .64rem/1.45 var(--font-geist-mono), monospace; }

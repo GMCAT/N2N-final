@@ -25,7 +25,6 @@ type WritableLike = { write(data: Uint8Array): Promise<void>; close(): Promise<v
 type IncomingFile = { offer: IncomingOffer; mode: "disk" | "memory"; writable?: WritableLike; chunks?: Uint8Array[]; nextIndex: number; received: number; digest: Uint8Array };
 type Signal = { id: number; kind: "offer" | "answer" | "ice" | "bye"; payload: unknown };
 
-const MAX_STREAM_SIZE = 10 * 1024 ** 3;
 const MAX_MEMORY_SIZE = 100 * 1024 ** 2;
 const CHUNK_SIZE = 48 * 1024;
 
@@ -144,7 +143,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       if (packet.kind === "confirm") { setPeerConfirmed(true); return; }
       if (packet.kind === "text") { if (packet.body.length > 20_000) throw new Error("ข้อความยาวเกินกำหนด"); setMessages((v) => [...v, { id: packet.id, direction: "received", kind: "text", text: packet.body, createdAt: packet.createdAt }]); return; }
       if (packet.kind === "file-offer") {
-        if (packet.size < 0 || packet.size > MAX_STREAM_SIZE || packet.chunks !== Math.ceil(packet.size / CHUNK_SIZE)) throw new Error("ข้อมูลไฟล์ไม่ถูกต้อง");
+        if (!Number.isSafeInteger(packet.size) || packet.size < 0 || !Number.isSafeInteger(packet.chunks) || packet.chunks !== Math.ceil(packet.size / CHUNK_SIZE)) throw new Error("ข้อมูลไฟล์ไม่ถูกต้อง");
         setIncomingOffer({ ...packet, streamingSupported: Boolean(savePicker()) }); return;
       }
       if (packet.kind === "file-ready") { outgoingReady.current.get(packet.id)?.(packet.mode); return; }
@@ -226,7 +225,6 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
   async function sendFile(file: File) {
     if (!localConfirmed || !peerConfirmed) throw new Error("กรุณายืนยันรหัสทั้งสองฝ่ายก่อนส่ง");
-    if (file.size > MAX_STREAM_SIZE) throw new Error("N2N v1.1.0 รองรับไฟล์สูงสุด 10 GB");
     const id = crypto.randomUUID(); const createdAt = Date.now(); const chunks = Math.ceil(file.size / CHUNK_SIZE);
     activeTransferRef.current = { id, direction: "sending" }; transferCancelledRef.current = false; transferPausedRef.current = false; peerPausedRef.current = false; setTransferPaused(false); setTransferLabel("รอผู้รับเลือกตำแหน่งบันทึก"); setProgress(0); beginMetrics(file.name, file.size);
     const ready = new Promise<"disk" | "memory">((resolve, reject) => { outgoingReady.current.set(id, resolve); outgoingReject.current.set(id, reject); });

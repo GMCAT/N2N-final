@@ -15,7 +15,9 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.1\.4/u);
+  assert.match(panel, /v1\.1\.5/u);
+  assert.match(panel, /LARGE_FILE_WARNING_BYTES/u);
+  assert.match(panel, /อาจใช้เวลาส่งนาน/u);
   assert.match(panel, /aria-keyshortcuts="Shift\+Enter"/u);
   assert.match(panel, /Mbps/u);
   assert.match(panel, /formatEta/u);
@@ -29,7 +31,7 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
     readFile(new URL("../server/rooms.ts", import.meta.url), "utf8"),
   ]);
   assert.match(live, /showSaveFilePicker/u);
-  assert.match(live, /MAX_STREAM_SIZE = 10 \* 1024 \*\* 3/u);
+  assert.doesNotMatch(live, /MAX_STREAM_SIZE/u);
   assert.match(live, /file-ready/u);
   assert.match(live, /file-ack/u);
   assert.match(live, /chainDigest/u);
