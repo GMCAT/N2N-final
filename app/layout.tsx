@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "N2N 1.2.0 — ส่งข้อความและไฟล์ถึงกันทันที",
+  title: "N2N 1.3.0 — ส่งข้อความและไฟล์ถึงกันทันที",
   description: "ห้องรับส่งแบบ 1 ต่อ 1 จับคู่ด้วยรหัส 8 หลัก และเข้ารหัสจากต้นทางถึงปลายทาง",
   icons: {
     icon: "/favicon.svg",

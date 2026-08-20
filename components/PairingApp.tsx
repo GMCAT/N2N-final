@@ -148,7 +148,6 @@ export function PairingApp() {
   async function sendCurrent() {
     try {
       setError("");
-      if (file && file.size >= LARGE_FILE_WARNING_BYTES && !window.confirm(`ไฟล์ ${file.name} มีขนาด ${formatBytes(file.size)} อาจใช้เวลาส่งนาน ขึ้นอยู่กับความเร็วอินเทอร์เน็ตของทั้งสองฝ่าย\n\nต้องการส่งต่อหรือไม่?`)) return;
       if (draft.trim()) await live.sendText(draft.trim());
       if (file) await live.sendFile(file);
       setDraft("");
@@ -164,7 +163,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.2.0</small></button>
+        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.0</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -235,7 +234,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.2.0 · WebRTC ผ่าน STUN · สูงสุด 1,024 ห้องพร้อมกัน · เกินกำหนดจะเข้าคิวอัตโนมัติ</p>
+            <p className="transfer-limit-note">N2N v1.3.0 · WebRTC ผ่าน STUN · สูงสุด 1,024 ห้องพร้อมกัน · เกินกำหนดจะเข้าคิวอัตโนมัติ</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
