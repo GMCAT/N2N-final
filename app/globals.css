@@ -115,6 +115,11 @@ button, .package-picker, .drop-zone { -webkit-tap-highlight-color: transparent; 
 .pair-intro > p:not(.kicker) { max-width: 570px; color: rgba(23,23,15,.68); font-size: 1.08rem; line-height: 1.7; }
 .pair-card { background: #fffef8; border: 2px solid var(--ink); padding: clamp(1.5rem, 3vw, 2.5rem); box-shadow: 12px 12px 0 var(--ink); }
 .pair-card h2 { margin: .45rem 0 1.8rem; font-size: clamp(1.8rem, 3vw, 2.7rem); letter-spacing: -.05em; }
+.queue-panel { display: grid; justify-items: center; gap: .8rem; text-align: center; }
+.queue-panel .queue-number { width: 96px; height: 96px; display: grid; place-items: center; border: 2px solid var(--ink); border-radius: 50%; background: var(--acid); box-shadow: 5px 5px 0 var(--ink); font: 900 2.2rem/1 var(--font-geist-mono), monospace; }
+.queue-panel p { margin: 0; }
+.queue-panel small { color: rgba(23,23,15,.6); font: 650 .65rem/1.4 var(--font-geist-mono), monospace; }
+.queue-panel button { width: 100%; }
 .choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .choice-button { min-height: 210px; border: 2px solid var(--ink); padding: 1.2rem; background: var(--paper); display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; cursor: pointer; box-shadow: 5px 5px 0 var(--ink); transition: transform .15s; }
 .choice-button:hover { transform: translate(-3px,-3px); box-shadow: 8px 8px 0 var(--ink); }

@@ -15,7 +15,9 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.1\.5/u);
+  assert.match(panel, /v1\.2\.0/u);
+  assert.match(panel, /คุณอยู่ลำดับที่/u);
+  assert.match(panel, /\/api\/rooms\/queue/u);
   assert.match(panel, /LARGE_FILE_WARNING_BYTES/u);
   assert.match(panel, /อาจใช้เวลาส่งนาน/u);
   assert.match(panel, /aria-keyshortcuts="Shift\+Enter"/u);
@@ -40,6 +42,8 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /file-resume/u);
   assert.match(live, /handshakeRef/u);
   assert.match(rooms, /expires_at = \?/u);
+  assert.match(rooms, /MAX_ACTIVE_ROOMS = 1024/u);
+  assert.match(rooms, /room_queue/u);
 });
 
 test("legacy receiver still reads fragment keys and decrypts chunk containers", async () => {

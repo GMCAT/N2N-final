@@ -22,6 +22,9 @@ type RoomRow = {
   status: "waiting" | "connected" | "closed";
 };
 
+type QueueRow = { id: string; token_digest: string; created_at: number; expires_at: number };
+const MAX_ACTIVE_ROOMS = 1024;
+
 function database(): Database {
   const db = (env as unknown as { DB?: Database }).DB;
   if (!db) throw new Error("Room database is unavailable");
@@ -55,6 +58,14 @@ function ensureSchema(db: Database): Promise<void> {
       FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
     )`).run();
     await db.prepare("CREATE INDEX IF NOT EXISTS room_signals_room_idx ON room_signals (room_id, id)").run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS room_queue (
+      id text PRIMARY KEY NOT NULL,
+      token_digest text NOT NULL,
+      created_at integer NOT NULL,
+      expires_at integer NOT NULL
+    )`).run();
+    await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_order_idx ON room_queue (created_at, id)").run();
+    await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_expiry_idx ON room_queue (expires_at)").run();
   })();
   return schemaReady;
 }
@@ -78,9 +89,7 @@ function randomCode(): string {
   return (values[0] % 100_000_000).toString().padStart(8, "0");
 }
 
-export async function createRoom() {
-  const db = database();
-  await ensureSchema(db);
+async function allocateRoom(db: Database) {
   const now = Date.now();
   const expiresAt = now + 10 * 60 * 1000;
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -88,16 +97,59 @@ export async function createRoom() {
     const code = randomCode();
     const senderToken = randomToken(32);
     try {
-      await db.prepare(`INSERT INTO rooms
+      const inserted = await db.prepare(`INSERT INTO rooms
         (id, code_digest, sender_token_digest, sender_seen_at, expires_at, status, created_at)
-        VALUES (?, ?, ?, ?, ?, 'waiting', ?)`)
-        .bind(id, await digest(code), await digest(senderToken), now, expiresAt, now).run();
-      return { id, code, senderToken, expiresAt };
+        SELECT ?, ?, ?, ?, ?, 'waiting', ?
+        WHERE (SELECT COUNT(*) FROM rooms WHERE expires_at > ? AND status <> 'closed') < ?`)
+        .bind(id, await digest(code), await digest(senderToken), now, expiresAt, now, now, MAX_ACTIVE_ROOMS).run();
+      if (inserted.meta?.changes === 1) return { queued: false as const, id, code, senderToken, expiresAt };
+      return null;
     } catch (error) {
       if (attempt === 7) throw error;
     }
   }
   throw new Error("Unable to allocate a room code");
+}
+
+async function queuePosition(db: Database, row: QueueRow, now: number): Promise<number> {
+  const result = await db.prepare(`SELECT COUNT(*) AS count FROM room_queue
+    WHERE expires_at > ? AND (created_at < ? OR (created_at = ? AND id <= ?))`)
+    .bind(now, row.created_at, row.created_at, row.id).first<{ count: number }>();
+  return Math.max(1, Number(result?.count ?? 1));
+}
+
+export async function createRoom() {
+  const db = database(); await ensureSchema(db);
+  const allocated = await allocateRoom(db);
+  if (allocated) return allocated;
+  const now = Date.now();
+  await db.prepare("DELETE FROM room_queue WHERE expires_at <= ?").bind(now).run();
+  const queueId = randomToken(18); const queueToken = randomToken(32); const expiresAt = now + 30 * 60 * 1000;
+  await db.prepare("INSERT INTO room_queue (id, token_digest, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .bind(queueId, await digest(queueToken), now, expiresAt).run();
+  const row = { id: queueId, token_digest: "", created_at: now, expires_at: expiresAt };
+  return { queued: true as const, queueId, queueToken, position: await queuePosition(db, row, now), expiresAt };
+}
+
+export async function queuedRoom(id: string, token: string) {
+  const db = database(); await ensureSchema(db); const now = Date.now();
+  const row = await db.prepare("SELECT * FROM room_queue WHERE id = ? AND expires_at > ?").bind(id, now).first<QueueRow>();
+  if (!row) throw new HttpError("Queue ticket is unavailable", 404);
+  if (await digest(token) !== row.token_digest) throw new HttpError("Queue access denied", 403);
+  const position = await queuePosition(db, row, now);
+  if (position === 1) {
+    const room = await allocateRoom(db);
+    if (room) { await db.prepare("DELETE FROM room_queue WHERE id = ?").bind(id).run(); return room; }
+  }
+  return { queued: true as const, queueId: id, position, expiresAt: row.expires_at };
+}
+
+export async function leaveQueue(id: string, token: string) {
+  const db = database(); await ensureSchema(db);
+  const row = await db.prepare("SELECT * FROM room_queue WHERE id = ?").bind(id).first<QueueRow>();
+  if (!row || await digest(token) !== row.token_digest) throw new HttpError("Queue access denied", 403);
+  await db.prepare("DELETE FROM room_queue WHERE id = ?").bind(id).run();
+  return { removed: true };
 }
 
 export async function joinRoom(rawCode: unknown) {

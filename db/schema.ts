@@ -63,3 +63,14 @@ export const roomSignals = sqliteTable(
   },
   (table) => [index("room_signals_room_idx").on(table.roomId, table.id)],
 );
+
+export const roomQueue = sqliteTable(
+  "room_queue",
+  {
+    id: text("id").primaryKey(),
+    tokenDigest: text("token_digest").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("room_queue_order_idx").on(table.createdAt, table.id), index("room_queue_expiry_idx").on(table.expiresAt)],
+);

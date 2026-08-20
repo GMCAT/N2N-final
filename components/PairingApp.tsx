@@ -6,6 +6,7 @@ import { useLiveRoom } from "@/hooks/useLiveRoom";
 type Mode = "choose" | "receive";
 type Role = "sender" | "receiver";
 type Session = { id: string; token: string; role: Role; code: string; expiresAt: number };
+type QueueTicket = { id: string; token: string; position: number; expiresAt: number };
 type RoomStatus = "waiting" | "connected" | "closed";
 const LARGE_FILE_WARNING_BYTES = 1024 ** 3;
 
@@ -39,6 +40,7 @@ export function PairingApp() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<Mode>("choose");
   const [session, setSession] = useState<Session | null>(null);
+  const [queue, setQueue] = useState<QueueTicket | null>(null);
   const [roomExpiresAt, setRoomExpiresAt] = useState(0);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>("waiting");
   const [peerOnline, setPeerOnline] = useState(false);
@@ -49,6 +51,26 @@ export function PairingApp() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const live = useLiveRoom(session, peerPublicKey);
+  const queueId = queue?.id;
+  const queueToken = queue?.token;
+
+  useEffect(() => {
+    if (!queueId || !queueToken) return;
+    let active = true; let timer: ReturnType<typeof setTimeout>;
+    async function pollQueue() {
+      try {
+        const result = await responseJson<
+          | { queued: true; queueId: string; position: number; expiresAt: number }
+          | { queued: false; id: string; code: string; senderToken: string; expiresAt: number }
+        >(await fetch(`/api/rooms/queue/${queueId}`, { method: "POST", headers: { Authorization: `Bearer ${queueToken}` } }));
+        if (!active) return;
+        if (result.queued) setQueue((current) => current ? { ...current, position: result.position, expiresAt: result.expiresAt } : current);
+        else { setQueue(null); setSession({ id: result.id, token: result.senderToken, role: "sender", code: result.code, expiresAt: result.expiresAt }); setRoomExpiresAt(result.expiresAt); }
+      } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "ตรวจสอบคิวไม่สำเร็จ"); }
+      finally { if (active) timer = setTimeout(pollQueue, 3_000); }
+    }
+    void pollQueue(); return () => { active = false; clearTimeout(timer); };
+  }, [queueId, queueToken]);
 
   useEffect(() => {
     if (!session) return;
@@ -83,11 +105,14 @@ export function PairingApp() {
     setBusy(true);
     setError("");
     try {
-      const room = await responseJson<{ id: string; code: string; senderToken: string; expiresAt: number }>(
+      const room = await responseJson<
+        | { queued: true; queueId: string; queueToken: string; position: number; expiresAt: number }
+        | { queued: false; id: string; code: string; senderToken: string; expiresAt: number }
+      >(
         await fetch("/api/rooms", { method: "POST" }),
       );
-      setSession({ id: room.id, token: room.senderToken, role: "sender", code: room.code, expiresAt: room.expiresAt });
-      setRoomExpiresAt(room.expiresAt);
+      if (room.queued) setQueue({ id: room.queueId, token: room.queueToken, position: room.position, expiresAt: room.expiresAt });
+      else { setSession({ id: room.id, token: room.senderToken, role: "sender", code: room.code, expiresAt: room.expiresAt }); setRoomExpiresAt(room.expiresAt); }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "สร้างห้องไม่สำเร็จ");
     } finally { setBusy(false); }
@@ -115,8 +140,9 @@ export function PairingApp() {
   }
 
   function reset() {
+    if (queue) void fetch(`/api/rooms/queue/${queue.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${queue.token}` } });
     setSession(null); setMode("choose"); setRoomStatus("waiting"); setPeerOnline(false);
-    setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
+    setQueue(null); setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
   }
 
   async function sendCurrent() {
@@ -138,7 +164,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.1.5</small></button>
+        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.2.0</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -151,7 +177,9 @@ export function PairingApp() {
             <div className="trust-row"><span>◆ ไม่ต้องสมัคร</span><span>◆ ห้องชั่วคราว</span><span>◆ เข้ารหัส E2E</span></div>
           </div>
           <div className="pair-card">
-            {mode === "choose" ? (
+            {queue ? (
+              <div className="queue-panel" role="status"><p className="eyebrow">ROOM CAPACITY · 1,024</p><span className="queue-number">{queue.position}</span><h2>คุณอยู่ลำดับที่ {queue.position}</h2><p>ห้องกำลังเต็ม ระบบจะสร้างรหัสให้อัตโนมัติเมื่อถึงคิว กรุณาเปิดหน้านี้ไว้</p><small>ตรวจสอบทุก 3 วินาที · คิวหมดอายุ {new Date(queue.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</small><button className="secondary-button" onClick={reset}>ออกจากคิว</button></div>
+            ) : mode === "choose" ? (
               <>
                 <p className="eyebrow">START A PRIVATE ROOM</p><h2>คุณต้องการทำอะไร?</h2>
                 <div className="choice-grid">
@@ -207,7 +235,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.1.5 · streaming ไม่จำกัดขนาดตายตัว · ไฟล์ตั้งแต่ 1 GB จะแจ้งเตือนก่อนส่ง · โหมดสำรอง 100 MB</p>
+            <p className="transfer-limit-note">N2N v1.2.0 · WebRTC ผ่าน STUN · สูงสุด 1,024 ห้องพร้อมกัน · เกินกำหนดจะเข้าคิวอัตโนมัติ</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
