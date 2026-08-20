@@ -74,3 +74,8 @@ export const roomQueue = sqliteTable(
   },
   (table) => [index("room_queue_order_idx").on(table.createdAt, table.id), index("room_queue_expiry_idx").on(table.expiresAt)],
 );
+
+export const dailyRoomQuota = sqliteTable("daily_room_quota", {
+  quotaDay: text("quota_day").primaryKey(),
+  roomRequests: integer("room_requests").notNull(),
+});

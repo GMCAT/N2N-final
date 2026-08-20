@@ -67,13 +67,13 @@ export function PairingApp() {
         if (result.queued) setQueue((current) => current ? { ...current, position: result.position, expiresAt: result.expiresAt } : current);
         else { setQueue(null); setSession({ id: result.id, token: result.senderToken, role: "sender", code: result.code, expiresAt: result.expiresAt }); setRoomExpiresAt(result.expiresAt); }
       } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "ตรวจสอบคิวไม่สำเร็จ"); }
-      finally { if (active) timer = setTimeout(pollQueue, 3_000); }
+      finally { if (active) timer = setTimeout(pollQueue, 60_000); }
     }
     void pollQueue(); return () => { active = false; clearTimeout(timer); };
   }, [queueId, queueToken]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || live.channelOpen) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function heartbeat() {
@@ -94,12 +94,12 @@ export function PairingApp() {
       } catch (caught) {
         if (active) setError(caught instanceof Error ? caught.message : "ขาดการเชื่อมต่อกับห้อง");
       } finally {
-        if (active) timer = setTimeout(heartbeat, 3_000);
+        if (active) timer = setTimeout(heartbeat, 15_000);
       }
     }
     void heartbeat();
     return () => { active = false; clearTimeout(timer); };
-  }, [session]);
+  }, [live.channelOpen, session]);
 
   async function createRoom() {
     setBusy(true);
@@ -141,6 +141,7 @@ export function PairingApp() {
 
   function reset() {
     if (queue) void fetch(`/api/rooms/queue/${queue.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${queue.token}` } });
+    if (session) void fetch(`/api/rooms/${session.id}/close`, { method: "POST", headers: { Authorization: `Bearer ${session.token}` }, keepalive: true });
     setSession(null); setMode("choose"); setRoomStatus("waiting"); setPeerOnline(false);
     setQueue(null); setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
   }
@@ -163,7 +164,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.0</small></button>
+        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.1</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -177,7 +178,7 @@ export function PairingApp() {
           </div>
           <div className="pair-card">
             {queue ? (
-              <div className="queue-panel" role="status"><p className="eyebrow">ROOM CAPACITY · 1,024</p><span className="queue-number">{queue.position}</span><h2>คุณอยู่ลำดับที่ {queue.position}</h2><p>ห้องกำลังเต็ม ระบบจะสร้างรหัสให้อัตโนมัติเมื่อถึงคิว กรุณาเปิดหน้านี้ไว้</p><small>ตรวจสอบทุก 3 วินาที · คิวหมดอายุ {new Date(queue.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</small><button className="secondary-button" onClick={reset}>ออกจากคิว</button></div>
+              <div className="queue-panel" role="status"><p className="eyebrow">ROOM CAPACITY · 1,024</p><span className="queue-number">{queue.position}</span><h2>คุณอยู่ลำดับที่ {queue.position}</h2><p>ห้องกำลังเต็ม ระบบจะสร้างรหัสให้อัตโนมัติเมื่อถึงคิว กรุณาเปิดหน้านี้ไว้</p><small>ตรวจสอบทุก 60 วินาที · คิวหมดอายุ {new Date(queue.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</small><button className="secondary-button" onClick={reset}>ออกจากคิว</button></div>
             ) : mode === "choose" ? (
               <>
                 <p className="eyebrow">START A PRIVATE ROOM</p><h2>คุณต้องการทำอะไร?</h2>
@@ -234,7 +235,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.3.0 · WebRTC ผ่าน STUN · สูงสุด 1,024 ห้องพร้อมกัน · เกินกำหนดจะเข้าคิวอัตโนมัติ</p>
+            <p className="transfer-limit-note">N2N v1.3.1 · ลด polling อัตโนมัติเมื่อ P2P พร้อม · จำกัด 1,000 คำขอสร้างห้อง/วัน · คิวสูงสุด 25</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>

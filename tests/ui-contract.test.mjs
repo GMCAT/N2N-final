@@ -15,7 +15,9 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.3\.0/u);
+  assert.match(panel, /v1\.3\.1/u);
+  assert.match(panel, /60_000/u);
+  assert.match(panel, /\/close/u);
   assert.doesNotMatch(panel, /window\.confirm/u);
   assert.match(panel, /คุณอยู่ลำดับที่/u);
   assert.match(panel, /\/api\/rooms\/queue/u);
@@ -44,6 +46,8 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /handshakeRef/u);
   assert.match(rooms, /expires_at = \?/u);
   assert.match(rooms, /MAX_ACTIVE_ROOMS = 1024/u);
+  assert.match(rooms, /MAX_DAILY_ROOM_REQUESTS = 1000/u);
+  assert.match(rooms, /MAX_QUEUE_SIZE = 25/u);
   assert.match(rooms, /room_queue/u);
 });
 

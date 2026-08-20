@@ -24,6 +24,8 @@ type RoomRow = {
 
 type QueueRow = { id: string; token_digest: string; created_at: number; expires_at: number };
 const MAX_ACTIVE_ROOMS = 1024;
+const MAX_DAILY_ROOM_REQUESTS = 1000;
+const MAX_QUEUE_SIZE = 25;
 
 function database(): Database {
   const db = (env as unknown as { DB?: Database }).DB;
@@ -66,6 +68,10 @@ function ensureSchema(db: Database): Promise<void> {
     )`).run();
     await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_order_idx ON room_queue (created_at, id)").run();
     await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_expiry_idx ON room_queue (expires_at)").run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS daily_room_quota (
+      quota_day text PRIMARY KEY NOT NULL,
+      room_requests integer NOT NULL
+    )`).run();
   })();
   return schemaReady;
 }
@@ -120,10 +126,17 @@ async function queuePosition(db: Database, row: QueueRow, now: number): Promise<
 
 export async function createRoom() {
   const db = database(); await ensureSchema(db);
+  const quotaDay = new Date().toISOString().slice(0, 10);
+  const quota = await db.prepare(`INSERT INTO daily_room_quota (quota_day, room_requests) VALUES (?, 1)
+    ON CONFLICT(quota_day) DO UPDATE SET room_requests = room_requests + 1
+    WHERE room_requests < ?`).bind(quotaDay, MAX_DAILY_ROOM_REQUESTS).run();
+  if (quota.meta?.changes !== 1) throw new HttpError("Daily room quota reached. Please try again tomorrow.", 503);
   const allocated = await allocateRoom(db);
   if (allocated) return allocated;
   const now = Date.now();
   await db.prepare("DELETE FROM room_queue WHERE expires_at <= ?").bind(now).run();
+  const queued = await db.prepare("SELECT COUNT(*) AS count FROM room_queue WHERE expires_at > ?").bind(now).first<{ count: number }>();
+  if (Number(queued?.count ?? 0) >= MAX_QUEUE_SIZE) throw new HttpError("Queue is full. Please try again later.", 503);
   const queueId = randomToken(18); const queueToken = randomToken(32); const expiresAt = now + 30 * 60 * 1000;
   await db.prepare("INSERT INTO room_queue (id, token_digest, created_at, expires_at) VALUES (?, ?, ?, ?)")
     .bind(queueId, await digest(queueToken), now, expiresAt).run();
@@ -185,7 +198,7 @@ async function authorizedRoom(id: string, token: string) {
 export async function heartbeatRoom(id: string, token: string) {
   const { db, room, role } = await authorizedRoom(id, token);
   const now = Date.now();
-  const expiresAt = now + 5 * 60 * 1000;
+  const expiresAt = now + (room.status === "connected" ? 2 * 60 * 60 * 1000 : 5 * 60 * 1000);
   const column = role === "sender" ? "sender_seen_at" : "receiver_seen_at";
   await db.prepare(`UPDATE rooms SET ${column} = ?, expires_at = ? WHERE id = ?`).bind(now, expiresAt, id).run();
   const peerSeenAt = role === "sender" ? room.receiver_seen_at : room.sender_seen_at;
@@ -212,13 +225,22 @@ export async function registerPublicKey(id: string, token: string, rawPublicKey:
   const column = role === "sender" ? "sender_public_key" : "receiver_public_key";
   const existing = role === "sender" ? room.sender_public_key : room.receiver_public_key;
   if (existing && existing !== publicKey) throw new HttpError("Public key is already locked", 409);
-  await db.prepare(`UPDATE rooms SET ${column} = ? WHERE id = ? AND (${column} IS NULL OR ${column} = ?)`)
-    .bind(publicKey, id, publicKey).run();
+  const expiresAt = room.status === "connected" ? Date.now() + 2 * 60 * 60 * 1000 : room.expires_at;
+  await db.prepare(`UPDATE rooms SET ${column} = ?, expires_at = ? WHERE id = ? AND (${column} IS NULL OR ${column} = ?)`)
+    .bind(publicKey, expiresAt, id, publicKey).run();
   return {
     role,
     publicKey,
     peerPublicKey: role === "sender" ? room.receiver_public_key : room.sender_public_key,
   };
+}
+
+export async function closeRoom(id: string, token: string) {
+  const { db } = await authorizedRoom(id, token);
+  const now = Date.now();
+  await db.prepare("UPDATE rooms SET status = 'closed', expires_at = ? WHERE id = ?").bind(now, id).run();
+  await db.prepare("DELETE FROM room_signals WHERE room_id = ?").bind(id).run();
+  return { closed: true };
 }
 
 type SignalKind = "offer" | "answer" | "ice" | "bye";
