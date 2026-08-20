@@ -47,6 +47,7 @@ function digestText(value: Uint8Array): string { return Array.from(value, (byte)
 export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: string | null) {
   const channelRef = useRef<RTCDataChannel | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const handshakeRef = useRef<{ roomId: string; promise: Promise<LiveKeyPair> } | null>(null);
   const keyRef = useRef<CryptoKey | null>(null);
   const incomingFiles = useRef(new Map<string, IncomingFile>());
   const outgoingReady = useRef(new Map<string, (mode: "disk" | "memory") => void>());
@@ -69,29 +70,33 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [transferLabel, setTransferLabel] = useState("");
   const [transferPaused, setTransferPaused] = useState(false);
   const [error, setError] = useState("");
+  const roomId = session?.id;
+  const roomToken = session?.token;
 
   useEffect(() => {
-    if (!session) return;
+    if (!roomId || !roomToken) return;
     let active = true;
-    void (async () => {
-      try {
+    if (handshakeRef.current?.roomId !== roomId) {
+      handshakeRef.current = { roomId, promise: (async () => {
         const pair = await createLiveKeyPair();
-        await json(await fetch(`/api/rooms/${session.id}/handshake`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ publicKey: pair.publicKey }) }));
-        if (active) setLocalPair(pair);
-      } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจเข้ารหัสไม่สำเร็จ"); }
-    })();
+        await json(await fetch(`/api/rooms/${roomId}/handshake`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${roomToken}` }, body: JSON.stringify({ publicKey: pair.publicKey }) }));
+        return pair;
+      })() };
+    }
+    void handshakeRef.current.promise.then((pair) => { if (active) setLocalPair(pair); })
+      .catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจเข้ารหัสไม่สำเร็จ"); });
     return () => { active = false; };
-  }, [session]);
+  }, [roomId, roomToken]);
 
   useEffect(() => {
-    if (!session || !localPair || !peerPublicKey) return;
+    if (!roomId || !localPair || !peerPublicKey) return;
     let active = true;
-    void deriveLiveSession(localPair.keyPair.privateKey, peerPublicKey, session.id).then((derived) => {
+    void deriveLiveSession(localPair.keyPair.privateKey, peerPublicKey, roomId).then((derived) => {
       if (!active) return;
-      keyRef.current = derived.encryptionKey; setEncryptionKey(derived.encryptionKey); setCryptoRoomId(session.id); setVerificationCode(derived.verificationCode);
+      keyRef.current = derived.encryptionKey; setEncryptionKey(derived.encryptionKey); setCryptoRoomId(roomId); setVerificationCode(derived.verificationCode);
     }).catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจร่วมไม่สำเร็จ"); });
     return () => { active = false; };
-  }, [localPair, peerPublicKey, session]);
+  }, [localPair, peerPublicKey, roomId]);
 
   const sendPacket = useCallback(async (packet: Packet) => {
     const channel = channelRef.current; const key = keyRef.current;

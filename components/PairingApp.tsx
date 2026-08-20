@@ -30,6 +30,7 @@ export function PairingApp() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<Mode>("choose");
   const [session, setSession] = useState<Session | null>(null);
+  const [roomExpiresAt, setRoomExpiresAt] = useState(0);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>("waiting");
   const [peerOnline, setPeerOnline] = useState(false);
   const [peerPublicKey, setPeerPublicKey] = useState<string | null>(null);
@@ -56,7 +57,7 @@ export function PairingApp() {
           setRoomStatus(status.status);
           setPeerOnline(status.peerOnline);
           setPeerPublicKey(status.peerPublicKey);
-          setSession((current) => current ? { ...current, expiresAt: status.expiresAt } : current);
+          setRoomExpiresAt(status.expiresAt);
           setError("");
         }
       } catch (caught) {
@@ -77,6 +78,7 @@ export function PairingApp() {
         await fetch("/api/rooms", { method: "POST" }),
       );
       setSession({ id: room.id, token: room.senderToken, role: "sender", code: room.code, expiresAt: room.expiresAt });
+      setRoomExpiresAt(room.expiresAt);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "สร้างห้องไม่สำเร็จ");
     } finally { setBusy(false); }
@@ -97,6 +99,7 @@ export function PairingApp() {
         }),
       );
       setSession({ id: room.id, token: room.receiverToken, role: "receiver", code, expiresAt: room.expiresAt });
+      setRoomExpiresAt(room.expiresAt);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "เข้าร่วมห้องไม่สำเร็จ");
     } finally { setBusy(false); }
@@ -104,7 +107,7 @@ export function PairingApp() {
 
   function reset() {
     setSession(null); setMode("choose"); setRoomStatus("waiting"); setPeerOnline(false);
-    setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null);
+    setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
   }
 
   async function sendCurrent() {
@@ -125,7 +128,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.1.0</small></button>
+        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.1.1</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -165,7 +168,7 @@ export function PairingApp() {
             <h1>{session.role === "sender" ? "ส่งรหัสนี้ให้ผู้รับ" : "เข้าห้องแล้ว"}</h1>
             <div className="code-display" aria-label={`รหัสห้อง ${formatCode(session.code)}`}><span>{code.slice(0, 4)}</span><span>{code.slice(4, 8)}</span></div>
             <div className={`peer-status ${connected ? "is-online" : ""}`}><span aria-hidden="true" /><div><strong>{connected ? "อีกฝ่ายออนไลน์" : "กำลังรออีกฝ่าย"}</strong><small>{connected ? "พร้อมสร้างช่องทางเข้ารหัส" : "เปิดหน้านี้ค้างไว้"}</small></div></div>
-            <p className="expiry-note">ห้องหมดอายุ {new Date(session.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</p>
+            <p className="expiry-note">ห้องหมดอายุ {new Date(roomExpiresAt || session.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</p>
             <button className="secondary-button leave-button" onClick={reset}>ออกจากห้อง</button>
           </aside>
           <section className="conversation" aria-label="พื้นที่รับส่งข้อมูล">
@@ -194,7 +197,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ…" : "รอการยืนยันช่องทาง"} maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.1.0 · Chrome/Edge รับแบบ streaming ลงดิสก์สูงสุด 10 GB · เบราว์เซอร์อื่นใช้โหมดสำรอง 100 MB</p>
+            <p className="transfer-limit-note">N2N v1.1.1 · Chrome/Edge รับแบบ streaming ลงดิสก์สูงสุด 10 GB · เบราว์เซอร์อื่นใช้โหมดสำรอง 100 MB</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
