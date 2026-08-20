@@ -73,6 +73,7 @@ test("production SEO exposes canonical metadata, robots, and sitemap", async () 
   assert.match(layout, /N2N Private Transfer/u);
   assert.match(layout, /metadataBase/u);
   assert.match(layout, /application\/ld\+json/u);
+  assert.match(layout, /vtpdYncksEVv4dFiDiELThrbwUPICoPgxi03ak27fKA/u);
   assert.match(robots, /sitemap\.xml/u);
   assert.match(robots, /disallow: \["\/api\/", "\/receive\/"\]/u);
   assert.match(sitemap, new RegExp(productionUrl.replaceAll(".", "\\."), "u"));
