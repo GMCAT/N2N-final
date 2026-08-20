@@ -186,6 +186,11 @@ button, .package-picker, .drop-zone { -webkit-tap-highlight-color: transparent; 
 .live-progress progress { grid-column: 1 / -1; width: 100%; accent-color: var(--orange); }
 .transfer-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: .5rem; }
 .transfer-actions button { border: 1px solid var(--ink); padding: .4rem .65rem; background: #fffef8; cursor: pointer; font-weight: 750; }
+.transfer-stats { grid-column: 1 / -1; display: grid; grid-template-columns: 1.4fr 1.2fr .8fr 1fr; gap: .5rem; }
+.transfer-stats span { min-width: 0; padding: .55rem .65rem; border: 1px solid rgba(23,23,15,.35); background: #fffef8; display: grid; gap: .15rem; }
+.transfer-stats small { color: rgba(23,23,15,.58); font: 650 .58rem/1.2 var(--font-geist-mono), monospace; }
+.transfer-stats b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
+@media (max-width: 800px) { .transfer-stats { grid-template-columns: 1fr 1fr; } }
 
 @media (max-width: 900px) {
   .pair-shell { padding: 0 1.2rem; }

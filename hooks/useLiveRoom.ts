@@ -6,6 +6,7 @@ import { createLiveKeyPair, decodeChunk, decryptLivePacket, deriveLiveSession, e
 export type LiveSessionIdentity = { id: string; token: string; role: "sender" | "receiver" };
 export type LiveMessage = { id: string; direction: "sent" | "received"; kind: "text" | "file"; text?: string; fileName?: string; fileUrl?: string; fileSize?: number; createdAt: number };
 export type IncomingOffer = { id: string; name: string; mime: string; size: number; chunks: number; createdAt: number; streamingSupported: boolean };
+export type TransferStats = { fileName: string; totalBytes: number; transferredBytes: number; mbps: number; etaSeconds: number | null };
 
 type Packet =
   | { kind: "confirm" }
@@ -56,6 +57,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const receiveQueue = useRef(Promise.resolve());
   const transferPausedRef = useRef(false);
   const transferCancelledRef = useRef(false);
+  const metricRef = useRef({ lastAt: 0, lastBytes: 0, smoothedMbps: 0 });
   const urlsRef = useRef<string[]>([]);
   const [encryptionKey, setEncryptionKey] = useState<CryptoKey | null>(null);
   const [cryptoRoomId, setCryptoRoomId] = useState("");
@@ -69,9 +71,29 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [progress, setProgress] = useState(0);
   const [transferLabel, setTransferLabel] = useState("");
   const [transferPaused, setTransferPaused] = useState(false);
+  const [transferStats, setTransferStats] = useState<TransferStats | null>(null);
   const [error, setError] = useState("");
   const roomId = session?.id;
   const roomToken = session?.token;
+
+  function beginMetrics(fileName: string, totalBytes: number) {
+    metricRef.current = { lastAt: performance.now(), lastBytes: 0, smoothedMbps: 0 };
+    setTransferStats({ fileName, totalBytes, transferredBytes: 0, mbps: 0, etaSeconds: null });
+  }
+
+  function updateMetrics(fileName: string, totalBytes: number, transferredBytes: number) {
+    const now = performance.now();
+    const metric = metricRef.current;
+    const elapsedMs = now - metric.lastAt;
+    if (elapsedMs > 0 && transferredBytes >= metric.lastBytes) {
+      const instantMbps = ((transferredBytes - metric.lastBytes) * 8) / (elapsedMs * 1000);
+      metric.smoothedMbps = metric.smoothedMbps ? metric.smoothedMbps * 0.75 + instantMbps * 0.25 : instantMbps;
+    }
+    metric.lastAt = now; metric.lastBytes = transferredBytes;
+    const remaining = Math.max(0, totalBytes - transferredBytes);
+    const etaSeconds = metric.smoothedMbps > 0 ? (remaining * 8) / (metric.smoothedMbps * 1_000_000) : null;
+    setTransferStats({ fileName, totalBytes, transferredBytes, mbps: metric.smoothedMbps, etaSeconds });
+  }
 
   useEffect(() => {
     if (!roomId || !roomToken) return;
@@ -131,10 +153,10 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         if (file.received + bytes.byteLength > file.offer.size) throw new Error("ขนาดไฟล์ไม่ถูกต้อง");
         if (file.mode === "disk") await file.writable!.write(bytes); else file.chunks!.push(bytes);
         file.digest = await chainDigest(file.digest, bytes);
-        file.received += bytes.byteLength; file.nextIndex += 1; setTransferLabel("กำลังรับไฟล์"); setProgress(file.offer.size ? file.received / file.offer.size : 1);
+        file.received += bytes.byteLength; file.nextIndex += 1; setTransferLabel("กำลังรับไฟล์"); setProgress(file.offer.size ? file.received / file.offer.size : 1); updateMetrics(file.offer.name, file.offer.size, file.received);
         await sendPacket({ kind: "file-ack", id: packet.id, index: packet.index }); return;
       }
-      if (packet.kind === "file-cancel") { const file = incomingFiles.current.get(packet.id); await file?.writable?.abort?.(); incomingFiles.current.delete(packet.id); setTransferLabel(""); setProgress(0); setError("ผู้ส่งยกเลิกการส่งไฟล์"); return; }
+      if (packet.kind === "file-cancel") { const file = incomingFiles.current.get(packet.id); await file?.writable?.abort?.(); incomingFiles.current.delete(packet.id); setTransferLabel(""); setProgress(0); setTransferStats(null); setError("ผู้ส่งยกเลิกการส่งไฟล์"); return; }
       if (packet.kind === "file-end") {
         const file = incomingFiles.current.get(packet.id);
         if (!file || file.received !== file.offer.size || file.nextIndex !== file.offer.chunks) throw new Error("ไฟล์ที่รับมาไม่ครบ");
@@ -143,7 +165,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         if (file.mode === "disk") await file.writable!.close();
         else { fileUrl = URL.createObjectURL(new Blob(file.chunks, { type: file.offer.mime })); urlsRef.current.push(fileUrl); }
         setMessages((v) => [...v, { id: packet.id, direction: "received", kind: "file", fileName: file.offer.name, fileUrl, fileSize: file.offer.size, createdAt: file.offer.createdAt }]);
-        incomingFiles.current.delete(packet.id); setTransferLabel(""); setProgress(0);
+        incomingFiles.current.delete(packet.id); setTransferLabel(""); setProgress(0); setTransferStats(null);
       }
     }
 
@@ -185,7 +207,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         if (offer.size > MAX_MEMORY_SIZE) throw new Error("เบราว์เซอร์นี้รับไฟล์แบบสตรีมไม่ได้ และโหมดสำรองจำกัด 100 MB");
         file = { offer, mode: "memory", chunks: [], nextIndex: 0, received: 0, digest: new Uint8Array() };
       }
-      incomingFiles.current.set(offer.id, file); setIncomingOffer(null); setTransferLabel("รอรับไฟล์"); setProgress(0);
+      incomingFiles.current.set(offer.id, file); setIncomingOffer(null); setTransferLabel("รอรับไฟล์"); setProgress(0); beginMetrics(offer.name, offer.size);
       await sendPacket({ kind: "file-ready", id: offer.id, mode: file.mode });
     } catch (caught) { if ((caught as { name?: string }).name !== "AbortError") setError(caught instanceof Error ? caught.message : "เตรียมรับไฟล์ไม่สำเร็จ"); }
   }
@@ -195,10 +217,10 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     if (!localConfirmed || !peerConfirmed) throw new Error("กรุณายืนยันรหัสทั้งสองฝ่ายก่อนส่ง");
     if (file.size > MAX_STREAM_SIZE) throw new Error("N2N v1.1.0 รองรับไฟล์สูงสุด 10 GB");
     const id = crypto.randomUUID(); const createdAt = Date.now(); const chunks = Math.ceil(file.size / CHUNK_SIZE);
-    transferCancelledRef.current = false; transferPausedRef.current = false; setTransferPaused(false); setTransferLabel("รอผู้รับเลือกตำแหน่งบันทึก"); setProgress(0);
+    transferCancelledRef.current = false; transferPausedRef.current = false; setTransferPaused(false); setTransferLabel("รอผู้รับเลือกตำแหน่งบันทึก"); setProgress(0); beginMetrics(file.name, file.size);
     const ready = new Promise<"disk" | "memory">((resolve, reject) => { outgoingReady.current.set(id, resolve); outgoingReject.current.set(id, reject); });
     await sendPacket({ kind: "file-offer", id, name: file.name, mime: file.type || "application/octet-stream", size: file.size, chunks, createdAt });
-    await ready; outgoingReady.current.delete(id); outgoingReject.current.delete(id); setTransferLabel("กำลังส่งไฟล์");
+    await ready; outgoingReady.current.delete(id); outgoingReject.current.delete(id); beginMetrics(file.name, file.size); setTransferLabel("กำลังส่งไฟล์");
     let digest = new Uint8Array();
     for (let index = 0; index < chunks; index += 1) {
       while (transferPausedRef.current) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -208,15 +230,15 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       digest = await chainDigest(digest, bytes);
       await sendPacket({ kind: "file-chunk", id, index, data: encodeChunk(bytes) });
       const acknowledged = await ack; if (acknowledged !== index) throw new Error("การยืนยัน chunk ไม่ตรงกัน");
-      setProgress((index + 1) / Math.max(chunks, 1));
+      const transferred = Math.min(file.size, (index + 1) * CHUNK_SIZE); setProgress((index + 1) / Math.max(chunks, 1)); updateMetrics(file.name, file.size, transferred);
     }
     ackWaiters.current.delete(id); await sendPacket({ kind: "file-end", id, digest: digestText(digest) });
-    const url = URL.createObjectURL(file); urlsRef.current.push(url); setMessages((v) => [...v, { id, direction: "sent", kind: "file", fileName: file.name, fileUrl: url, fileSize: file.size, createdAt }]); setTransferLabel(""); setProgress(0);
+    const url = URL.createObjectURL(file); urlsRef.current.push(url); setMessages((v) => [...v, { id, direction: "sent", kind: "file", fileName: file.name, fileUrl: url, fileSize: file.size, createdAt }]); setTransferLabel(""); setProgress(0); setTransferStats(null);
   }
 
-  function pauseTransfer() { transferPausedRef.current = true; setTransferPaused(true); setTransferLabel("หยุดส่งชั่วคราว"); }
-  function resumeTransfer() { transferPausedRef.current = false; setTransferPaused(false); setTransferLabel("กำลังส่งไฟล์"); }
+  function pauseTransfer() { transferPausedRef.current = true; setTransferPaused(true); setTransferLabel("หยุดส่งชั่วคราว"); setTransferStats((current) => current ? { ...current, mbps: 0, etaSeconds: null } : current); }
+  function resumeTransfer() { transferPausedRef.current = false; setTransferPaused(false); setTransferLabel("กำลังส่งไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; }
   function cancelTransfer() { transferCancelledRef.current = true; transferPausedRef.current = false; setTransferPaused(false); }
 
-  return { channelOpen, verificationCode, localConfirmed, peerConfirmed, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferPaused, error, confirmPeer, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode, localConfirmed, peerConfirmed, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }
