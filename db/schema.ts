@@ -32,3 +32,34 @@ export const rateLimits = sqliteTable(
   },
   (table) => [index("rate_limits_window_idx").on(table.windowStart)],
 );
+
+export const rooms = sqliteTable(
+  "rooms",
+  {
+    id: text("id").primaryKey(),
+    codeDigest: text("code_digest").notNull().unique(),
+    senderTokenDigest: text("sender_token_digest").notNull(),
+    receiverTokenDigest: text("receiver_token_digest"),
+    senderSeenAt: integer("sender_seen_at").notNull(),
+    receiverSeenAt: integer("receiver_seen_at"),
+    senderPublicKey: text("sender_public_key"),
+    receiverPublicKey: text("receiver_public_key"),
+    expiresAt: integer("expires_at").notNull(),
+    status: text("status", { enum: ["waiting", "connected", "closed"] }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("rooms_expiry_idx").on(table.expiresAt)],
+);
+
+export const roomSignals = sqliteTable(
+  "room_signals",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    senderRole: text("sender_role", { enum: ["sender", "receiver"] }).notNull(),
+    kind: text("kind", { enum: ["offer", "answer", "ice", "bye"] }).notNull(),
+    payload: text("payload").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("room_signals_room_idx").on(table.roomId, table.id)],
+);

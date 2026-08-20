@@ -5,7 +5,7 @@ import test from "node:test";
 
 async function database() {
   const db = new DatabaseSync(":memory:");
-  for (const name of ["0000_create_transfers.sql", "0001_add_chunked_transfers.sql", "0002_add_rate_limits.sql"]) {
+  for (const name of ["0000_create_transfers.sql", "0001_add_chunked_transfers.sql", "0002_add_rate_limits.sql", "0003_flaky_marten_broadcloak.sql"]) {
     const migration = await readFile(new URL(`../drizzle/${name}`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) db.exec(statement);
@@ -61,4 +61,25 @@ test("atomically refuses downloads beyond the configured limit", async () => {
   assert.equal(consume.run("limited", now).changes, 1);
   assert.equal(consume.run("limited", now).changes, 0);
   assert.equal(db.prepare("SELECT download_count FROM transfers WHERE id = ?").get("limited").download_count, 1);
+});
+
+test("locks pairing rooms to one receiver and keeps signaling opaque", async () => {
+  const db = await database();
+  const now = Date.now();
+  db.prepare(`INSERT INTO rooms
+    (id, code_digest, sender_token_digest, sender_seen_at, expires_at, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'waiting', ?)`)
+    .run("room-1", "code-digest", "sender-digest", now, now + 600_000, now);
+
+  const claim = db.prepare(`UPDATE rooms SET receiver_token_digest = ?, receiver_seen_at = ?, status = 'connected'
+    WHERE id = ? AND status = 'waiting' AND receiver_token_digest IS NULL AND expires_at > ?`);
+  assert.equal(claim.run("receiver-a", now, "room-1", now).changes, 1);
+  assert.equal(claim.run("receiver-b", now, "room-1", now).changes, 0);
+
+  db.prepare(`INSERT INTO room_signals (room_id, sender_role, kind, payload, created_at)
+    VALUES (?, 'sender', 'offer', ?, ?)`).run("room-1", JSON.stringify({ sdp: "opaque" }), now);
+  const signal = db.prepare("SELECT sender_role, kind, payload FROM room_signals WHERE room_id = ?").get("room-1");
+  assert.equal(signal.sender_role, "sender");
+  assert.equal(signal.kind, "offer");
+  assert.deepEqual(JSON.parse(signal.payload), { sdp: "opaque" });
 });

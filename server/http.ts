@@ -3,7 +3,7 @@ export function jsonError(error: unknown, fallbackStatus = 500): Response {
   if (error instanceof HttpError) {
     return Response.json({ error: message }, { status: error.status, headers: { "Cache-Control": "no-store" } });
   }
-  const clientError = /must be|not pending|expired|size does not match|incomplete|cannot be completed|Invalid deletion token|Part index|part size|Unsupported transfer|Invalid fileId/u.test(message);
+  const clientError = /must be|not pending|expired|size does not match|incomplete|cannot be completed|Invalid deletion token|Part index|part size|Unsupported transfer|Invalid fileId|room code/u.test(message);
   return Response.json({ error: message }, { status: clientError ? 400 : fallbackStatus });
 }
 
