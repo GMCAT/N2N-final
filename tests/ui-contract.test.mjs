@@ -61,3 +61,19 @@ test("legacy receiver still reads fragment keys and decrypts chunk containers", 
   assert.match(panel, /decryptChunkContainer/u);
   assert.doesNotMatch(panel, /localStorage|sessionStorage/u);
 });
+
+test("production SEO exposes canonical metadata, robots, and sitemap", async () => {
+  const [layout, robots, sitemap] = await Promise.all([
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/robots.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/sitemap.ts", import.meta.url), "utf8"),
+  ]);
+  const productionUrl = "https://n2n-final.kumaikinpuck.workers.dev";
+
+  assert.match(layout, /N2N Private Transfer/u);
+  assert.match(layout, /metadataBase/u);
+  assert.match(layout, /application\/ld\+json/u);
+  assert.match(robots, /sitemap\.xml/u);
+  assert.match(robots, /disallow: \["\/api\/", "\/receive\/"\]/u);
+  assert.match(sitemap, new RegExp(productionUrl.replaceAll(".", "\\."), "u"));
+});
