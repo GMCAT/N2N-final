@@ -133,8 +133,9 @@ async function authorizedRoom(id: string, token: string) {
 export async function heartbeatRoom(id: string, token: string) {
   const { db, room, role } = await authorizedRoom(id, token);
   const now = Date.now();
+  const expiresAt = now + 5 * 60 * 1000;
   const column = role === "sender" ? "sender_seen_at" : "receiver_seen_at";
-  await db.prepare(`UPDATE rooms SET ${column} = ? WHERE id = ?`).bind(now, id).run();
+  await db.prepare(`UPDATE rooms SET ${column} = ?, expires_at = ? WHERE id = ?`).bind(now, expiresAt, id).run();
   const peerSeenAt = role === "sender" ? room.receiver_seen_at : room.sender_seen_at;
   const peerPublicKey = role === "sender" ? room.receiver_public_key : room.sender_public_key;
   return {
@@ -143,7 +144,7 @@ export async function heartbeatRoom(id: string, token: string) {
     status: room.status,
     peerOnline: room.status === "connected" && peerSeenAt !== null && peerSeenAt >= now - 15_000,
     peerPublicKey,
-    expiresAt: room.expires_at,
+    expiresAt,
   };
 }
 

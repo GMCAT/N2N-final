@@ -15,8 +15,23 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.0\.1/u);
+  assert.match(panel, /v1\.1\.0/u);
+  assert.match(panel, /acceptIncomingFile/u);
   assert.doesNotMatch(page + panel, /codex-preview|react-loading-skeleton/u);
+});
+
+test("v1.1 streams large files with receiver consent and backpressure", async () => {
+  const [live, rooms] = await Promise.all([
+    readFile(new URL("../hooks/useLiveRoom.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/rooms.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(live, /showSaveFilePicker/u);
+  assert.match(live, /MAX_STREAM_SIZE = 10 \* 1024 \*\* 3/u);
+  assert.match(live, /file-ready/u);
+  assert.match(live, /file-ack/u);
+  assert.match(live, /chainDigest/u);
+  assert.match(live, /pauseTransfer/u);
+  assert.match(rooms, /expires_at = \?/u);
 });
 
 test("legacy receiver still reads fragment keys and decrypts chunk containers", async () => {
