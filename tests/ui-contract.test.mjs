@@ -15,6 +15,7 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
+  assert.match(panel, /v1\.0\.1/u);
   assert.doesNotMatch(page + panel, /codex-preview|react-loading-skeleton/u);
 });
 

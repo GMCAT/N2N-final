@@ -104,6 +104,7 @@ button, .package-picker, .drop-zone { -webkit-tap-highlight-color: transparent; 
 .pair-shell { min-height: 100vh; padding: 0 5vw; background: var(--paper); background-image: linear-gradient(rgba(23,23,15,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(23,23,15,.045) 1px, transparent 1px); background-size: 42px 42px; }
 .pair-topbar { max-width: 1440px; margin: 0 auto; }
 .brand-button { border: 0; padding: 0; background: transparent; cursor: pointer; }
+.version-mark { margin-left: .7rem; color: rgba(23,23,15,.58); font: 800 .62rem/1 var(--font-geist-mono), monospace; letter-spacing: .02em; }
 .live-pill { display: flex; align-items: center; gap: .55rem; border: 1.5px solid var(--ink); padding: .55rem .8rem; background: #fffef8; font: 800 .68rem/1 var(--font-geist-mono), monospace; }
 .live-pill span, .peer-status > span { width: 10px; height: 10px; background: #a5a392; border: 1px solid var(--ink); border-radius: 50%; }
 .live-pill.is-online span, .peer-status.is-online > span { background: #34d46f; box-shadow: 0 0 0 4px rgba(52,212,111,.18); }
@@ -165,6 +166,7 @@ button, .package-picker, .drop-zone { -webkit-tap-highlight-color: transparent; 
 .file-preview small { margin-top: .2rem; color: rgba(23,23,15,.6); }
 .file-preview button { border: 0; background: transparent; font-size: 1.4rem; cursor: pointer; }
 .room-error { margin: 0 1rem 1rem; }
+.transfer-limit-note { margin: -.3rem 1rem 1rem; color: rgba(23,23,15,.58); font: 650 .64rem/1.45 var(--font-geist-mono), monospace; }
 .message-list { width: 100%; align-self: stretch; display: flex; flex-direction: column; gap: .8rem; }
 .message-item { max-width: min(76%, 620px); padding: .75rem .9rem; border: 1.5px solid var(--ink); background: #fffef8; box-shadow: 3px 3px 0 var(--ink); }
 .message-item.sent { align-self: flex-end; background: #e9ff98; }

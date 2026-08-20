@@ -123,7 +123,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span></button>
+        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.0.1</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -191,6 +191,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ…" : "รอการยืนยันช่องทาง"} maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
+            <p className="transfer-limit-note">N2N v1.0.1 · ไฟล์สูงสุด 100 MB เนื่องจากผู้รับประกอบไฟล์ในหน่วยความจำของเบราว์เซอร์</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
