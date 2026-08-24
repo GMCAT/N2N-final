@@ -53,7 +53,18 @@ export async function enforceRateLimit(
      ON CONFLICT(rate_key) DO UPDATE SET count = count + 1
      RETURNING count`,
   ).bind(key, windowStart).first<{ count: number }>();
-  if (!row || row.count > maximum) throw new HttpError("Too many requests", 429);
+  if (!row || row.count > maximum) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((windowStart + windowMs - Date.now()) / 1000));
+    throw new HttpError("Too many requests", 429, retryAfterSeconds);
+  }
+  return { key, windowStart };
+}
+
+export async function releaseRateLimit(rateKey: string) {
+  const db = database();
+  await ensureSchema(db);
+  await db.prepare("UPDATE rate_limits SET count = MAX(0, count - 1) WHERE rate_key = ?")
+    .bind(rateKey).run();
 }
 
 export async function cleanupRateLimits(before: number) {

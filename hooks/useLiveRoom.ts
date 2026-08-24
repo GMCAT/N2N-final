@@ -66,7 +66,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [encryptionKey, setEncryptionKey] = useState<CryptoKey | null>(null);
   const [cryptoRoomId, setCryptoRoomId] = useState("");
   const [localPair, setLocalPair] = useState<LiveKeyPair | null>(null);
+  const [handshakePeer, setHandshakePeer] = useState<{ roomId: string; publicKey: string } | null>(null);
   const [verificationCode, setVerificationCode] = useState("");
+  const [keyExchangeStatus, setKeyExchangeStatus] = useState<"idle" | "sending" | "retrying" | "ready">("idle");
   const [channelOpen, setChannelOpen] = useState(false);
   const [localConfirmed, setLocalConfirmed] = useState(false);
   const [peerConfirmed, setPeerConfirmed] = useState(false);
@@ -80,6 +82,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [error, setError] = useState("");
   const roomId = session?.id;
   const roomToken = session?.token;
+  const effectivePeerPublicKey = peerPublicKey ?? (handshakePeer?.roomId === roomId ? handshakePeer.publicKey : null);
 
   function beginMetrics(fileName: string, totalBytes: number) {
     metricRef.current = { lastAt: performance.now(), lastBytes: 0, smoothedMbps: 0 };
@@ -104,28 +107,40 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     if (!roomId || !roomToken) return;
     let active = true;
     if (handshakeRef.current?.roomId !== roomId) {
-      handshakeRef.current = { roomId, promise: (async () => {
-        const pair = await createLiveKeyPair();
-        await json(await fetch(`/api/rooms/${roomId}/handshake`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${roomToken}` }, body: JSON.stringify({ publicKey: pair.publicKey }) }));
-        return pair;
-      })() };
+      handshakeRef.current = { roomId, promise: createLiveKeyPair() };
     }
-    void handshakeRef.current.promise.then((pair) => {
-      if (active) { setPeerLeft(false); setLocalPair(pair); }
-    })
-      .catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจเข้ารหัสไม่สำเร็จ"); });
+    void handshakeRef.current.promise.then(async (pair) => {
+      let attempt = 0;
+      while (active) {
+        try {
+          setKeyExchangeStatus(attempt ? "retrying" : "sending");
+          const registration = await json<{ peerPublicKey: string | null }>(await fetch(`/api/rooms/${roomId}/handshake`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${roomToken}` }, body: JSON.stringify({ publicKey: pair.publicKey }) }));
+          if (active) {
+            if (registration.peerPublicKey) setHandshakePeer({ roomId, publicKey: registration.peerPublicKey });
+            setPeerLeft(false); setLocalPair(pair); setKeyExchangeStatus("ready");
+          }
+          return;
+        } catch (caught) {
+          attempt += 1;
+          if (!active) return;
+          setKeyExchangeStatus("retrying");
+          if (attempt >= 8) setError(caught instanceof Error ? caught.message : "ส่งกุญแจเข้ารหัสไม่สำเร็จ");
+          await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, 750 * (2 ** Math.min(attempt, 3)))));
+        }
+      }
+    }).catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจเข้ารหัสไม่สำเร็จ"); });
     return () => { active = false; };
   }, [roomId, roomToken]);
 
   useEffect(() => {
-    if (!roomId || !localPair || !peerPublicKey) return;
+    if (!roomId || !localPair || !effectivePeerPublicKey) return;
     let active = true;
-    void deriveLiveSession(localPair.keyPair.privateKey, peerPublicKey, roomId).then((derived) => {
+    void deriveLiveSession(localPair.keyPair.privateKey, effectivePeerPublicKey, roomId).then((derived) => {
       if (!active) return;
       keyRef.current = derived.encryptionKey; setEncryptionKey(derived.encryptionKey); setCryptoRoomId(roomId); setVerificationCode(derived.verificationCode);
     }).catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจร่วมไม่สำเร็จ"); });
     return () => { active = false; };
-  }, [localPair, peerPublicKey, roomId]);
+  }, [effectivePeerPublicKey, localPair, roomId]);
 
   const sendPacket = useCallback(async (packet: Packet) => {
     const channel = channelRef.current; const key = keyRef.current;
@@ -138,7 +153,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
     let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>;
     const pendingIce: RTCIceCandidateInit[] = [];
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] }); pcRef.current = pc;
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
 
     async function receiveEnvelope(data: unknown) {
@@ -202,7 +217,10 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
     }
     pc.onicecandidate = (event) => { if (event.candidate) void publish("ice", event.candidate.toJSON()).catch(() => setError("ส่งข้อมูลเชื่อมต่อไม่สำเร็จ")); };
-    pc.onconnectionstatechange = () => { if (["failed", "closed", "disconnected"].includes(pc.connectionState)) setChannelOpen(false); };
+    pc.onconnectionstatechange = () => {
+      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) setChannelOpen(false);
+      if (pc.connectionState === "failed") setError("เครือข่ายนี้อาจปิดกั้น WebRTC P2P กรุณาลองเครือข่ายอื่น");
+    };
     pc.ondatachannel = (event) => bindChannel(event.channel);
     async function applySignal(signal: Signal) {
       if (signal.kind === "offer" && session.role === "receiver") { await pc.setRemoteDescription(signal.payload as RTCSessionDescriptionInit); for (const c of pendingIce.splice(0)) await pc.addIceCandidate(c); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); await publish("answer", pc.localDescription); }
@@ -274,5 +292,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode, localConfirmed, peerConfirmed, peerLeft, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeft, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }

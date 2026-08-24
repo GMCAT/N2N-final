@@ -1,7 +1,12 @@
 export function jsonError(error: unknown, fallbackStatus = 500): Response {
   const message = error instanceof Error ? error.message : "Unexpected error";
   if (error instanceof HttpError) {
-    return Response.json({ error: message }, { status: error.status, headers: { "Cache-Control": "no-store" } });
+    const headers = new Headers({ "Cache-Control": "no-store" });
+    if (error.retryAfterSeconds) headers.set("Retry-After", String(error.retryAfterSeconds));
+    return Response.json(
+      { error: message, retryAfterSeconds: error.retryAfterSeconds },
+      { status: error.status, headers },
+    );
   }
   const clientError = /must be|not pending|expired|size does not match|incomplete|cannot be completed|Invalid deletion token|Part index|part size|Unsupported transfer|Invalid fileId|room code/u.test(message);
   return Response.json({ error: message }, { status: clientError ? 400 : fallbackStatus });
@@ -9,10 +14,12 @@ export function jsonError(error: unknown, fallbackStatus = 500): Response {
 
 export class HttpError extends Error {
   readonly status: number;
+  readonly retryAfterSeconds?: number;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
     super(message);
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
