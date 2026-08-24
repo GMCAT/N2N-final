@@ -11,6 +11,7 @@ export type TransferStats = { fileName: string; totalBytes: number; transferredB
 type Packet =
   | { kind: "confirm"; epoch: string }
   | { kind: "leave" }
+  | { kind: "reverify-request" }
   | { kind: "reverify"; epoch: string; code: string }
   | { kind: "text"; id: string; body: string; createdAt: number }
   | { kind: "file-offer"; id: string; name: string; mime: string; size: number; chunks: number; createdAt: number }
@@ -61,7 +62,6 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const transferPausedRef = useRef(false);
   const peerPausedRef = useRef(false);
   const verificationEpochRef = useRef("");
-  const channelEverOpenedRef = useRef(false);
   const verificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transferCancelledRef = useRef(false);
   const activeTransferRef = useRef<{ id: string; direction: "sending" | "receiving" } | null>(null);
@@ -125,7 +125,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
           if (active) {
             if (registration.peerPublicKey) setHandshakePeer({ roomId, publicKey: registration.peerPublicKey });
             setLocalPair(pair); setKeyExchangeStatus("ready");
-            channelEverOpenedRef.current = false; setVerificationExpiresAt(0); setVerificationExpiredRoomId(null);
+            setVerificationExpiresAt(0); setVerificationExpiredRoomId(null);
             setLocalConfirmed(false); setPeerConfirmed(false); setMessages([]); setIncomingOffer(null);
             setProgress(0); setTransferLabel(""); setTransferStats(null); setTransferPaused(false); setError("");
           }
@@ -162,7 +162,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   useEffect(() => {
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
     let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>; let negotiationTimer: ReturnType<typeof setTimeout>;
-    let reconnecting = false; let negotiationPending = false;
+    let reconnecting = false; let negotiationPending = false; let needsReverification = false;
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
@@ -180,6 +180,22 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       const digits = number.toString().padStart(6, "0");
       return { kind: "reverify" as const, epoch: `reconnect:${crypto.randomUUID()}`, code: `${digits.slice(0, 3)} ${digits.slice(3)}` };
     }
+    function invalidateVerification() {
+      needsReverification = true;
+      setChannelOpen(false); setVerificationCode(""); setLocalConfirmed(false); setPeerConfirmed(false); setVerificationExpiresAt(0);
+      if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
+    }
+    function startReverificationIfReady() {
+      if (!needsReverification || channelRef.current?.readyState !== "open") return;
+      needsReverification = false;
+      if (session.role === "receiver") {
+        void sendPacket({ kind: "reverify-request" }).catch((caught) => { needsReverification = true; setError(caught instanceof Error ? caught.message : "ขอรหัสยืนยันใหม่ไม่สำเร็จ"); setTimeout(startReverificationIfReady, 1_500); });
+        return;
+      }
+      const packet = freshVerificationPacket();
+      verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline();
+      void sendPacket(packet).catch((caught) => { needsReverification = true; setError(caught instanceof Error ? caught.message : "ส่งรหัสยืนยันใหม่ไม่สำเร็จ"); setTimeout(startReverificationIfReady, 1_500); });
+    }
 
     async function receiveEnvelope(data: unknown) {
       if (typeof data !== "string" || !keyRef.current) return;
@@ -191,6 +207,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         return;
       }
       if (packet.kind === "confirm") { if (packet.epoch === verificationEpochRef.current) setPeerConfirmed(true); return; }
+      if (packet.kind === "reverify-request") { if (session.role === "sender") { needsReverification = true; startReverificationIfReady(); } return; }
       if (packet.kind === "reverify") {
         verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline(); return;
       }
@@ -236,19 +253,11 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
       channel.onopen = () => {
         setChannelOpen(true); setError("");
-        const reopened = channelEverOpenedRef.current;
-        channelEverOpenedRef.current = true;
-        if (reopened && session.role === "sender") {
-          const packet = freshVerificationPacket();
-          verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline();
-          void sendPacket(packet).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งรหัสยืนยันใหม่ไม่สำเร็จ"));
-        }
+        startReverificationIfReady();
       };
       channel.onclose = () => {
         if (channelRef.current !== channel) return;
-        setChannelOpen(false);
-        setVerificationCode(""); setLocalConfirmed(false); setPeerConfirmed(false); setVerificationExpiresAt(0);
-        if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
+        invalidateVerification();
         // A mobile browser can suspend WebRTC while its native file picker is
         // open. Only an authenticated `leave` packet means the peer left.
         if (active) scheduleReconnect();
@@ -283,9 +292,10 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       reconnectTimer = setTimeout(() => { void reconnect(); }, 1_500);
     }
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) setChannelOpen(false);
+      if (["failed", "disconnected"].includes(pc.connectionState)) invalidateVerification();
+      if (pc.connectionState === "closed") setChannelOpen(false);
       if (["failed", "disconnected"].includes(pc.connectionState)) scheduleReconnect();
-      if (pc.connectionState === "connected") { clearTimeout(reconnectTimer); setError(""); }
+      if (pc.connectionState === "connected") { clearTimeout(reconnectTimer); setChannelOpen(channelRef.current?.readyState === "open"); setError(""); startReverificationIfReady(); }
       if (pc.connectionState === "failed") setError("เครือข่ายนี้อาจปิดกั้น WebRTC P2P กรุณาลองเครือข่ายอื่น");
     };
     pc.ondatachannel = (event) => bindChannel(event.channel);
