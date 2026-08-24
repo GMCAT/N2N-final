@@ -81,13 +81,13 @@ export function PairingApp() {
   }, []);
 
   useEffect(() => {
-    if (!session || !live.peerLeft) return;
+    if (!session || live.peerLeftRoomId !== session.id) return;
     const timer = window.setTimeout(
       () => clearLocalSession("อีกฝ่ายออกจากห้องแล้ว ห้องนี้ถูกปิดอัตโนมัติ"),
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [clearLocalSession, live.peerLeft, session]);
+  }, [clearLocalSession, live.peerLeftRoomId, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -238,7 +238,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.4</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.5</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -317,7 +317,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.3.4 · HTTPS key retry · 30 ห้อง/10 นาที/IP · จำกัด 1,000 คำขอสร้างห้อง/วัน</p>
+            <p className="transfer-limit-note">N2N v1.3.5 · สร้างห้องใหม่ได้ทันทีหลังออก · HTTPS key retry · 30 ห้อง/10 นาที/IP</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
