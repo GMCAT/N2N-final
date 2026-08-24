@@ -36,30 +36,40 @@ interface ScheduledEvent {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const nonceBytes = crypto.getRandomValues(new Uint8Array(18));
-    const nonce = btoa(String.fromCharCode(...nonceBytes));
-    const development = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    const policy = createContentSecurityPolicy(nonce, development);
-    const requestHeaders = new Headers(request.headers);
-    requestHeaders.set("Content-Security-Policy", policy);
-    const securedRequest = new Request(request, { headers: requestHeaders });
+    try {
+      const nonceBytes = crypto.getRandomValues(new Uint8Array(18));
+      const nonce = btoa(String.fromCharCode(...nonceBytes));
+      const development = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+      const policy = createContentSecurityPolicy(nonce, development);
+      const requestHeaders = new Headers(request.headers);
+      requestHeaders.set("Content-Security-Policy", policy);
+      const securedRequest = new Request(request, { headers: requestHeaders });
 
-    let response: Response;
+      let response: Response;
 
-    if (url.pathname === "/_vinext/image") {
-      const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      response = await handleImageOptimization(securedRequest, {
-        fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
-        transformImage: async (body, { width, format, quality }) => {
-          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
-          return result.response();
-        },
-      }, allowedWidths);
-    } else {
-      response = await handler.fetch(securedRequest, env, ctx);
+      if (url.pathname === "/_vinext/image") {
+        const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+        response = await handleImageOptimization(securedRequest, {
+          fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
+          transformImage: async (body, { width, format, quality }) => {
+            const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+            return result.response();
+          },
+        }, allowedWidths);
+      } else {
+        response = await handler.fetch(securedRequest, env, ctx);
+      }
+      const headers = applySecurityHeaders(new Headers(response.headers), policy);
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    } catch (error) {
+      console.error("Unhandled N2N Worker request", error);
+      const preview = url.hostname !== "n2n-final.kumaikinpuck.workers.dev";
+      const detail = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error);
+      return new Response(preview ? detail : "N2N is temporarily unavailable", {
+        status: 500,
+        headers: { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" },
+      });
     }
-    const headers = applySecurityHeaders(new Headers(response.headers), policy);
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     // The live P2P product does not require R2. Keep legacy encrypted-transfer
