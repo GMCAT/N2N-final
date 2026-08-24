@@ -20,9 +20,10 @@ type RoomRow = {
   receiver_public_key: string | null;
   expires_at: number;
   status: "waiting" | "connected" | "closed";
+  create_rate_key: string | null;
 };
 
-type QueueRow = { id: string; token_digest: string; created_at: number; expires_at: number };
+type QueueRow = { id: string; token_digest: string; create_rate_key: string | null; created_at: number; expires_at: number };
 const MAX_ACTIVE_ROOMS = 1024;
 const MAX_DAILY_ROOM_REQUESTS = 1000;
 const MAX_QUEUE_SIZE = 25;
@@ -47,8 +48,13 @@ function ensureSchema(db: Database): Promise<void> {
       receiver_public_key text,
       expires_at integer NOT NULL,
       status text NOT NULL,
+      create_rate_key text,
       created_at integer NOT NULL
     )`).run();
+    const roomColumns = await db.prepare("PRAGMA table_info(rooms)").run<{ name: string }>();
+    if (!(roomColumns.results ?? []).some((column) => column.name === "create_rate_key")) {
+      await db.prepare("ALTER TABLE rooms ADD COLUMN create_rate_key text").run();
+    }
     await db.prepare("CREATE INDEX IF NOT EXISTS rooms_expiry_idx ON rooms (expires_at)").run();
     await db.prepare(`CREATE TABLE IF NOT EXISTS room_signals (
       id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -63,9 +69,14 @@ function ensureSchema(db: Database): Promise<void> {
     await db.prepare(`CREATE TABLE IF NOT EXISTS room_queue (
       id text PRIMARY KEY NOT NULL,
       token_digest text NOT NULL,
+      create_rate_key text,
       created_at integer NOT NULL,
       expires_at integer NOT NULL
     )`).run();
+    const queueColumns = await db.prepare("PRAGMA table_info(room_queue)").run<{ name: string }>();
+    if (!(queueColumns.results ?? []).some((column) => column.name === "create_rate_key")) {
+      await db.prepare("ALTER TABLE room_queue ADD COLUMN create_rate_key text").run();
+    }
     await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_order_idx ON room_queue (created_at, id)").run();
     await db.prepare("CREATE INDEX IF NOT EXISTS room_queue_expiry_idx ON room_queue (expires_at)").run();
     await db.prepare(`CREATE TABLE IF NOT EXISTS daily_room_quota (
@@ -95,7 +106,7 @@ function randomCode(): string {
   return (values[0] % 100_000_000).toString().padStart(8, "0");
 }
 
-async function allocateRoom(db: Database) {
+async function allocateRoom(db: Database, createRateKey: string | null = null) {
   const now = Date.now();
   const expiresAt = now + 10 * 60 * 1000;
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -104,10 +115,10 @@ async function allocateRoom(db: Database) {
     const senderToken = randomToken(32);
     try {
       const inserted = await db.prepare(`INSERT INTO rooms
-        (id, code_digest, sender_token_digest, sender_seen_at, expires_at, status, created_at)
-        SELECT ?, ?, ?, ?, ?, 'waiting', ?
+        (id, code_digest, sender_token_digest, sender_seen_at, expires_at, status, create_rate_key, created_at)
+        SELECT ?, ?, ?, ?, ?, 'waiting', ?, ?
         WHERE (SELECT COUNT(*) FROM rooms WHERE expires_at > ? AND status <> 'closed') < ?`)
-        .bind(id, await digest(code), await digest(senderToken), now, expiresAt, now, now, MAX_ACTIVE_ROOMS).run();
+        .bind(id, await digest(code), await digest(senderToken), now, expiresAt, createRateKey, now, now, MAX_ACTIVE_ROOMS).run();
       if (inserted.meta?.changes === 1) return { queued: false as const, id, code, senderToken, expiresAt };
       return null;
     } catch (error) {
@@ -124,23 +135,23 @@ async function queuePosition(db: Database, row: QueueRow, now: number): Promise<
   return Math.max(1, Number(result?.count ?? 1));
 }
 
-export async function createRoom() {
+export async function createRoom(createRateKey: string) {
   const db = database(); await ensureSchema(db);
   const quotaDay = new Date().toISOString().slice(0, 10);
   const quota = await db.prepare(`INSERT INTO daily_room_quota (quota_day, room_requests) VALUES (?, 1)
     ON CONFLICT(quota_day) DO UPDATE SET room_requests = room_requests + 1
     WHERE room_requests < ?`).bind(quotaDay, MAX_DAILY_ROOM_REQUESTS).run();
   if (quota.meta?.changes !== 1) throw new HttpError("Daily room quota reached. Please try again tomorrow.", 503);
-  const allocated = await allocateRoom(db);
+  const allocated = await allocateRoom(db, createRateKey);
   if (allocated) return allocated;
   const now = Date.now();
   await db.prepare("DELETE FROM room_queue WHERE expires_at <= ?").bind(now).run();
   const queued = await db.prepare("SELECT COUNT(*) AS count FROM room_queue WHERE expires_at > ?").bind(now).first<{ count: number }>();
   if (Number(queued?.count ?? 0) >= MAX_QUEUE_SIZE) throw new HttpError("Queue is full. Please try again later.", 503);
   const queueId = randomToken(18); const queueToken = randomToken(32); const expiresAt = now + 30 * 60 * 1000;
-  await db.prepare("INSERT INTO room_queue (id, token_digest, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(queueId, await digest(queueToken), now, expiresAt).run();
-  const row = { id: queueId, token_digest: "", created_at: now, expires_at: expiresAt };
+  await db.prepare("INSERT INTO room_queue (id, token_digest, create_rate_key, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(queueId, await digest(queueToken), createRateKey, now, expiresAt).run();
+  const row = { id: queueId, token_digest: "", create_rate_key: createRateKey, created_at: now, expires_at: expiresAt };
   return { queued: true as const, queueId, queueToken, position: await queuePosition(db, row, now), expiresAt };
 }
 
@@ -151,7 +162,7 @@ export async function queuedRoom(id: string, token: string) {
   if (await digest(token) !== row.token_digest) throw new HttpError("Queue access denied", 403);
   const position = await queuePosition(db, row, now);
   if (position === 1) {
-    const room = await allocateRoom(db);
+    const room = await allocateRoom(db, row.create_rate_key);
     if (room) { await db.prepare("DELETE FROM room_queue WHERE id = ?").bind(id).run(); return room; }
   }
   return { queued: true as const, queueId: id, position, expiresAt: row.expires_at };
@@ -236,11 +247,11 @@ export async function registerPublicKey(id: string, token: string, rawPublicKey:
 }
 
 export async function closeRoom(id: string, token: string) {
-  const { db } = await authorizedRoom(id, token);
+  const { db, room } = await authorizedRoom(id, token);
   const now = Date.now();
-  await db.prepare("UPDATE rooms SET status = 'closed', expires_at = ? WHERE id = ?").bind(now, id).run();
+  await db.prepare("UPDATE rooms SET status = 'closed', expires_at = ?, create_rate_key = NULL WHERE id = ?").bind(now, id).run();
   await db.prepare("DELETE FROM room_signals WHERE room_id = ?").bind(id).run();
-  return { closed: true };
+  return { closed: true, createRateKey: room.create_rate_key };
 }
 
 type SignalKind = "offer" | "answer" | "ice" | "bye";

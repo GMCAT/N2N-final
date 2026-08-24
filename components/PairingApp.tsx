@@ -10,10 +10,27 @@ type QueueTicket = { id: string; token: string; position: number; expiresAt: num
 type RoomStatus = "waiting" | "connected" | "closed";
 const LARGE_FILE_WARNING_BYTES = 1024 ** 3;
 
+class ApiError extends Error {
+  readonly status: number;
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
+    super(message);
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
-  const payload = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error ?? "ไม่สามารถเชื่อมต่อได้");
+  const payload = await response.json() as T & { error?: string; retryAfterSeconds?: number };
+  if (!response.ok) throw new ApiError(payload.error ?? "ไม่สามารถเชื่อมต่อได้", response.status, payload.retryAfterSeconds);
   return payload;
+}
+
+function rateLimitMessage(error: unknown): string {
+  if (!(error instanceof ApiError) || error.status !== 429) return error instanceof Error ? error.message : "สร้างห้องไม่สำเร็จ";
+  const minutes = Math.max(1, Math.ceil((error.retryAfterSeconds ?? 60) / 60));
+  return `สร้างห้องบ่อยเกินไป กรุณารอประมาณ ${minutes} นาที`;
 }
 
 function formatCode(value: string): string {
@@ -38,6 +55,7 @@ function formatEta(seconds: number | null): string {
 
 export function PairingApp() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const createInFlightRef = useRef(false);
   const [mode, setMode] = useState<Mode>("choose");
   const [session, setSession] = useState<Session | null>(null);
   const [queue, setQueue] = useState<QueueTicket | null>(null);
@@ -107,6 +125,7 @@ export function PairingApp() {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function heartbeat() {
+      let nextDelay = 15_000;
       try {
         const status = await responseJson<{ status: RoomStatus; peerOnline: boolean; peerPublicKey: string | null; expiresAt: number }>(
           await fetch(`/api/rooms/${session?.id}/heartbeat`, {
@@ -118,6 +137,7 @@ export function PairingApp() {
           setRoomStatus(status.status);
           setPeerOnline(status.peerOnline);
           setPeerPublicKey(status.peerPublicKey);
+          nextDelay = status.peerPublicKey ? 5_000 : 2_000;
           setRoomExpiresAt(status.expiresAt);
           setError("");
         }
@@ -132,7 +152,7 @@ export function PairingApp() {
           }
         }
       } finally {
-        if (active) timer = setTimeout(heartbeat, 15_000);
+        if (active) timer = setTimeout(heartbeat, nextDelay);
       }
     }
     void heartbeat();
@@ -140,6 +160,8 @@ export function PairingApp() {
   }, [clearLocalSession, live.channelOpen, session]);
 
   async function createRoom() {
+    if (createInFlightRef.current) return;
+    createInFlightRef.current = true;
     setBusy(true);
     setError("");
     setNotice("");
@@ -153,8 +175,8 @@ export function PairingApp() {
       if (room.queued) setQueue({ id: room.queueId, token: room.queueToken, position: room.position, expiresAt: room.expiresAt });
       else { setSession({ id: room.id, token: room.senderToken, role: "sender", code: room.code, expiresAt: room.expiresAt }); setRoomExpiresAt(room.expiresAt); }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "สร้างห้องไม่สำเร็จ");
-    } finally { setBusy(false); }
+      setError(rateLimitMessage(caught));
+    } finally { createInFlightRef.current = false; setBusy(false); }
   }
 
   async function joinRoom(event: FormEvent) {
@@ -216,7 +238,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.3</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.4</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -235,7 +257,7 @@ export function PairingApp() {
               <>
                 <p className="eyebrow">START A PRIVATE ROOM</p><h2>คุณต้องการทำอะไร?</h2>
                 <div className="choice-grid">
-                  <button className="choice-button choice-send" disabled={busy} onClick={createRoom}><span className="choice-number">01</span><strong>ส่ง</strong><small>สร้างรหัสให้ผู้รับ</small></button>
+                  <button className="choice-button choice-send" disabled={busy} onClick={() => void createRoom()}><span className="choice-number">01</span><strong>{busy ? "กำลังสร้าง…" : "ส่ง"}</strong><small>สร้างรหัสให้ผู้รับ</small></button>
                   <button className="choice-button" onClick={() => { setMode("receive"); setError(""); }}><span className="choice-number">02</span><strong>รับ</strong><small>กรอกรหัสจากผู้ส่ง</small></button>
                 </div>
               </>
@@ -267,8 +289,8 @@ export function PairingApp() {
             <header className="conversation-header"><div><p className="eyebrow">PRIVATE CHANNEL</p><h2>ข้อความและไฟล์</h2></div><span className={`security-chip ${live.ready ? "is-secure" : ""}`}>{live.ready ? "E2E · VERIFIED" : live.channelOpen ? "E2E · VERIFY" : "E2E · CONNECTING"}</span></header>
             {!live.ready && (
               <div className="channel-wait-note" role="status">
-                <strong>กรุณารอรับรหัสยืนยันก่อนเริ่มส่งไฟล์</strong>
-                <span>เมื่อรหัสปรากฏ ให้ตรวจว่าตรงกันและกดยืนยันทั้งสองฝ่าย จากนั้นปุ่มส่งไฟล์จะพร้อมใช้งาน</span>
+                <strong>{live.verificationCode ? "ตรวจรหัสยืนยันให้ตรงกัน" : "กำลังรอรับกุญแจเข้ารหัสจากอีกฝ่าย"}</strong>
+                <span>{live.keyExchangeStatus === "retrying" ? "เครือข่ายตอบสนองช้า ระบบกำลังลองส่งกุญแจใหม่ผ่าน HTTPS อัตโนมัติ" : "เมื่อรหัสปรากฏ ให้ตรวจว่าตรงกันและกดยืนยันทั้งสองฝ่าย จากนั้นจึงเริ่มส่งไฟล์"}</span>
               </div>
             )}
             {live.channelOpen && !live.ready && (
@@ -295,7 +317,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.3.3 · โลโก้ N2N ใหม่ · ออกจากห้องพร้อมกันทั้งสองฝ่าย · จำกัด 1,000 คำขอสร้างห้อง/วัน</p>
+            <p className="transfer-limit-note">N2N v1.3.4 · HTTPS key retry · 30 ห้อง/10 นาที/IP · จำกัด 1,000 คำขอสร้างห้อง/วัน</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>

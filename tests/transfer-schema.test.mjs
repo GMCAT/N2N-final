@@ -5,7 +5,7 @@ import test from "node:test";
 
 async function database() {
   const db = new DatabaseSync(":memory:");
-  for (const name of ["0000_create_transfers.sql", "0001_add_chunked_transfers.sql", "0002_add_rate_limits.sql", "0003_flaky_marten_broadcloak.sql"]) {
+  for (const name of ["0000_create_transfers.sql", "0001_add_chunked_transfers.sql", "0002_add_rate_limits.sql", "0003_flaky_marten_broadcloak.sql", "0004_add_room_queue.sql", "0005_add_daily_room_quota.sql", "0006_add_room_rate_key.sql"]) {
     const migration = await readFile(new URL(`../drizzle/${name}`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) db.exec(statement);
@@ -34,6 +34,26 @@ test("rate limits increment atomically without storing raw identities", async ()
   assert.equal(increment.get("hashed-identity", 1000).count, 1);
   assert.equal(increment.get("hashed-identity", 1000).count, 2);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM rate_limits").get().count, 1);
+});
+
+test("room closure can refund its hashed creation permit once", async () => {
+  const db = await database();
+  const roomColumns = db.prepare("PRAGMA table_info(rooms)").all().map((column) => column.name);
+  const queueColumns = db.prepare("PRAGMA table_info(room_queue)").all().map((column) => column.name);
+  assert.ok(roomColumns.includes("create_rate_key"));
+  assert.ok(queueColumns.includes("create_rate_key"));
+
+  const now = Date.now();
+  db.prepare("INSERT INTO rate_limits (rate_key, window_start, count) VALUES ('permit', ?, 1)").run(now);
+  db.prepare(`INSERT INTO rooms
+    (id, code_digest, sender_token_digest, sender_seen_at, expires_at, status, create_rate_key, created_at)
+    VALUES ('refundable', 'code', 'sender', ?, ?, 'waiting', 'permit', ?)`)
+    .run(now, now + 60_000, now);
+  const permit = db.prepare("SELECT create_rate_key FROM rooms WHERE id = 'refundable'").get().create_rate_key;
+  db.prepare("UPDATE rooms SET status = 'closed', create_rate_key = NULL WHERE id = 'refundable'").run();
+  db.prepare("UPDATE rate_limits SET count = MAX(0, count - 1) WHERE rate_key = ?").run(permit);
+  assert.equal(db.prepare("SELECT count FROM rate_limits WHERE rate_key = 'permit'").get().count, 0);
+  assert.equal(db.prepare("SELECT create_rate_key FROM rooms WHERE id = 'refundable'").get().create_rate_key, null);
 });
 
 test("stores chunk manifest fields without plaintext metadata", async () => {
