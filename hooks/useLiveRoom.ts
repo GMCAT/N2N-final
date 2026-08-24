@@ -72,7 +72,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [channelOpen, setChannelOpen] = useState(false);
   const [localConfirmed, setLocalConfirmed] = useState(false);
   const [peerConfirmed, setPeerConfirmed] = useState(false);
-  const [peerLeft, setPeerLeft] = useState(false);
+  const [peerLeftRoomId, setPeerLeftRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
   const [progress, setProgress] = useState(0);
@@ -118,7 +118,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
           const registration = await json<{ peerPublicKey: string | null }>(await fetch(`/api/rooms/${roomId}/handshake`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${roomToken}` }, body: JSON.stringify({ publicKey: pair.publicKey }) }));
           if (active) {
             if (registration.peerPublicKey) setHandshakePeer({ roomId, publicKey: registration.peerPublicKey });
-            setPeerLeft(false); setLocalPair(pair); setKeyExchangeStatus("ready");
+            setLocalPair(pair); setKeyExchangeStatus("ready");
+            setLocalConfirmed(false); setPeerConfirmed(false); setMessages([]); setIncomingOffer(null);
+            setProgress(0); setTransferLabel(""); setTransferStats(null); setTransferPaused(false); setError("");
           }
           return;
         } catch (caught) {
@@ -161,7 +163,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       if (typeof data !== "string" || !keyRef.current) return;
       const packet = await decryptLivePacket<Packet>(keyRef.current, session.id, data);
       if (packet.kind === "leave") {
-        setPeerLeft(true);
+        setPeerLeftRoomId(session.id);
         channelRef.current?.close();
         pcRef.current?.close();
         return;
@@ -212,7 +214,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       channel.onclose = () => {
         setChannelOpen(false);
         setPeerConfirmed(false);
-        if (active && opened) setPeerLeft(true);
+        if (active && opened) setPeerLeftRoomId(session.id);
       };
       channel.onerror = () => setError("ช่องทางรับส่งขัดข้อง");
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
@@ -293,5 +295,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeft, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }
