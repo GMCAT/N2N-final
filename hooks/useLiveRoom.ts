@@ -11,7 +11,6 @@ export type TransferStats = { fileName: string; totalBytes: number; transferredB
 type Packet =
   | { kind: "confirm"; epoch: string }
   | { kind: "leave" }
-  | { kind: "picker-status"; active: boolean }
   | { kind: "reverify"; epoch: string; code: string }
   | { kind: "text"; id: string; body: string; createdAt: number }
   | { kind: "file-offer"; id: string; name: string; mime: string; size: number; chunks: number; createdAt: number }
@@ -61,9 +60,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const receiveQueue = useRef(Promise.resolve());
   const transferPausedRef = useRef(false);
   const peerPausedRef = useRef(false);
-  const filePickerActiveRef = useRef(false);
   const verificationEpochRef = useRef("");
-  const pendingReverifyRef = useRef<{ kind: "reverify"; epoch: string; code: string } | null>(null);
+  const channelEverOpenedRef = useRef(false);
+  const verificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transferCancelledRef = useRef(false);
   const activeTransferRef = useRef<{ id: string; direction: "sending" | "receiving" } | null>(null);
   const metricRef = useRef({ lastAt: 0, lastBytes: 0, smoothedMbps: 0 });
@@ -78,7 +77,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [localConfirmed, setLocalConfirmed] = useState(false);
   const [peerConfirmed, setPeerConfirmed] = useState(false);
   const [peerLeftRoomId, setPeerLeftRoomId] = useState<string | null>(null);
-  const [peerSelectingFile, setPeerSelectingFile] = useState(false);
+  const [verificationExpiresAt, setVerificationExpiresAt] = useState(0);
+  const [verificationExpiredRoomId, setVerificationExpiredRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
   const [progress, setProgress] = useState(0);
@@ -125,6 +125,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
           if (active) {
             if (registration.peerPublicKey) setHandshakePeer({ roomId, publicKey: registration.peerPublicKey });
             setLocalPair(pair); setKeyExchangeStatus("ready");
+            channelEverOpenedRef.current = false; setVerificationExpiresAt(0); setVerificationExpiredRoomId(null);
             setLocalConfirmed(false); setPeerConfirmed(false); setMessages([]); setIncomingOffer(null);
             setProgress(0); setTransferLabel(""); setTransferStats(null); setTransferPaused(false); setError("");
           }
@@ -165,6 +166,20 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
+    function startVerificationDeadline() {
+      const expiresAt = Date.now() + 5 * 60_000;
+      if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
+      setVerificationExpiresAt(expiresAt);
+      verificationTimerRef.current = setTimeout(() => {
+        void fetch(`/api/rooms/${session.id}/close`, { method: "POST", headers: { Authorization: `Bearer ${session.token}` }, keepalive: true }).finally(() => setVerificationExpiredRoomId(session.id));
+      }, Math.max(0, expiresAt - Date.now()));
+    }
+    function freshVerificationPacket() {
+      const bytes = crypto.getRandomValues(new Uint8Array(4));
+      const number = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0) % 1_000_000;
+      const digits = number.toString().padStart(6, "0");
+      return { kind: "reverify" as const, epoch: `reconnect:${crypto.randomUUID()}`, code: `${digits.slice(0, 3)} ${digits.slice(3)}` };
+    }
 
     async function receiveEnvelope(data: unknown) {
       if (typeof data !== "string" || !keyRef.current) return;
@@ -176,10 +191,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         return;
       }
       if (packet.kind === "confirm") { if (packet.epoch === verificationEpochRef.current) setPeerConfirmed(true); return; }
-      if (packet.kind === "picker-status") { setPeerSelectingFile(packet.active); return; }
       if (packet.kind === "reverify") {
-        if (verificationEpochRef.current.startsWith("reverify:") && packet.epoch < verificationEpochRef.current) return;
-        verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); return;
+        verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline(); return;
       }
       if (packet.kind === "text") { if (packet.body.length > 20_000) throw new Error("ข้อความยาวเกินกำหนด"); setMessages((v) => [...v, { id: packet.id, direction: "received", kind: "text", text: packet.body, createdAt: packet.createdAt }]); return; }
       if (packet.kind === "file-offer") {
@@ -223,11 +236,19 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
       channel.onopen = () => {
         setChannelOpen(true); setError("");
-        void sendPacket({ kind: "picker-status", active: filePickerActiveRef.current }).catch(() => undefined);
-        if (pendingReverifyRef.current) void sendPacket(pendingReverifyRef.current).then(() => { pendingReverifyRef.current = null; }).catch(() => undefined);
+        const reopened = channelEverOpenedRef.current;
+        channelEverOpenedRef.current = true;
+        if (reopened && session.role === "sender") {
+          const packet = freshVerificationPacket();
+          verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline();
+          void sendPacket(packet).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งรหัสยืนยันใหม่ไม่สำเร็จ"));
+        }
       };
       channel.onclose = () => {
+        if (channelRef.current !== channel) return;
         setChannelOpen(false);
+        setVerificationCode(""); setLocalConfirmed(false); setPeerConfirmed(false); setVerificationExpiresAt(0);
+        if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
         // A mobile browser can suspend WebRTC while its native file picker is
         // open. Only an authenticated `leave` packet means the peer left.
         if (active) scheduleReconnect();
@@ -289,20 +310,15 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
 
+  useEffect(() => {
+    if (!localConfirmed || !peerConfirmed) return;
+    if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
+    verificationTimerRef.current = null;
+  }, [localConfirmed, peerConfirmed]);
+
+  useEffect(() => () => { if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current); }, []);
+
   async function confirmPeer() { await sendPacket({ kind: "confirm", epoch: verificationEpochRef.current }); setLocalConfirmed(true); }
-  const announceFilePicker = useCallback(async (active: boolean) => {
-    filePickerActiveRef.current = active;
-    try { await sendPacket({ kind: "picker-status", active }); } catch { /* reconnect publishes the current state */ }
-  }, [sendPacket]);
-  const requestFileVerification = useCallback(async () => {
-    const bytes = crypto.getRandomValues(new Uint8Array(4));
-    const number = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0) % 1_000_000;
-    const digits = number.toString().padStart(6, "0");
-    const packet = { kind: "reverify" as const, epoch: `reverify:${crypto.randomUUID()}`, code: `${digits.slice(0, 3)} ${digits.slice(3)}` };
-    verificationEpochRef.current = packet.epoch; pendingReverifyRef.current = packet;
-    setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false);
-    try { await sendPacket(packet); pendingReverifyRef.current = null; } catch { /* sent after reconnect */ }
-  }, [sendPacket]);
   async function leaveRoom() {
     if (channelRef.current?.readyState !== "open" || !keyRef.current) return;
     try {
@@ -359,5 +375,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, peerSelectingFile, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, announceFilePicker, requestFileVerification, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", verificationExpiresAt, verificationExpiredRoomId, keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }

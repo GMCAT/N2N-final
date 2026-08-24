@@ -67,14 +67,11 @@ export function PairingApp() {
   const [codeInput, setCodeInput] = useState("");
   const [draft, setDraft] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [selectingFile, setSelectingFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
   const live = useLiveRoom(session, peerPublicKey);
-  const announceFilePicker = live.announceFilePicker;
-  const requestFileVerification = live.requestFileVerification;
   const queueId = queue?.id;
   const queueToken = queue?.token;
 
@@ -92,6 +89,15 @@ export function PairingApp() {
     );
     return () => window.clearTimeout(timer);
   }, [clearLocalSession, live.peerLeftRoomId, session]);
+
+  useEffect(() => {
+    if (!session || live.verificationExpiredRoomId !== session.id) return;
+    const timer = window.setTimeout(
+      () => clearLocalSession("หมดเวลายืนยันช่องทาง 5 นาที ห้องถูกปิดแล้ว"),
+      0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [clearLocalSession, live.verificationExpiredRoomId, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -113,21 +119,22 @@ export function PairingApp() {
     const pickerFinished = () => {
       window.setTimeout(() => {
         if (!filePickerOpenRef.current) return;
-        filePickerOpenRef.current = false; setSelectingFile(false); void announceFilePicker(false);
+        filePickerOpenRef.current = false;
       }, 1_000);
     };
     window.addEventListener("focus", pickerFinished);
     return () => window.removeEventListener("focus", pickerFinished);
-  }, [announceFilePicker]);
+  }, []);
 
   const beginFileSelection = useCallback(() => {
-    filePickerOpenRef.current = true; setSelectingFile(true); void announceFilePicker(true); fileRef.current?.click();
-  }, [announceFilePicker]);
+    filePickerOpenRef.current = true;
+    fileRef.current?.click();
+  }, []);
 
   const finishFileSelection = useCallback((selected: File | null) => {
-    filePickerOpenRef.current = false; setSelectingFile(false); void announceFilePicker(false); setFile(selected);
-    if (selected) void requestFileVerification();
-  }, [announceFilePicker, requestFileVerification]);
+    filePickerOpenRef.current = false;
+    setFile(selected);
+  }, []);
 
   useEffect(() => {
     if (!queueId || !queueToken) return;
@@ -265,7 +272,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.4.1</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.4.2</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -314,7 +321,6 @@ export function PairingApp() {
           </aside>
           <section className="conversation" aria-label="พื้นที่รับส่งข้อมูล">
             <header className="conversation-header"><div><p className="eyebrow">PRIVATE CHANNEL</p><h2>ข้อความและไฟล์</h2></div><span className={`security-chip ${live.ready ? "is-secure" : ""}`}>{live.ready ? "E2E · VERIFIED" : live.channelOpen ? "E2E · VERIFY" : "E2E · CONNECTING"}</span></header>
-            {(selectingFile || live.peerSelectingFile) && <div className="verification-banner"><strong>{selectingFile ? "กำลังเปิดโปรแกรมเลือกไฟล์" : "อีกฝ่ายกำลังเลือกไฟล์"}</strong><span>กรุณารอและเปิดหน้าเว็บนี้ค้างไว้ ระบบจะตรวจการเชื่อมต่อเมื่อเลือกไฟล์เสร็จ</span></div>}
             {!live.ready && (
               <div className="channel-wait-note" role="status">
                 <strong>{live.verificationCode ? "ตรวจรหัสยืนยันให้ตรงกัน" : "กำลังรอรับกุญแจเข้ารหัสจากอีกฝ่าย"}</strong>
@@ -323,7 +329,7 @@ export function PairingApp() {
             )}
             {live.channelOpen && !live.ready && (
               <div className="verify-panel">
-                <div><small>รหัสยืนยันต้องตรงกันทั้งสองหน้าจอ</small><strong>{live.verificationCode || "กำลังสร้าง…"}</strong></div>
+                <div><small>รหัสยืนยันต้องตรงกันทั้งสองหน้าจอ{live.verificationExpiresAt > 0 ? ` · ยืนยันภายใน 5 นาที (ก่อน ${new Date(live.verificationExpiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })})` : ""}</small><strong>{live.verificationCode || "กำลังสร้าง…"}</strong></div>
                 <button className="verify-button" disabled={!live.verificationCode || live.localConfirmed} onClick={() => void live.confirmPeer().catch((caught) => setError(caught instanceof Error ? caught.message : "ยืนยันไม่สำเร็จ"))}>{live.localConfirmed ? "ยืนยันแล้ว" : "รหัสตรงกัน"}</button>
                 {live.localConfirmed && !live.peerConfirmed && <small className="wait-confirm">รออีกฝ่ายยืนยัน</small>}
               </div>
@@ -345,7 +351,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.4.1 · เลือกไฟล์แล้วต้องยืนยันรหัสใหม่ทั้งสองฝ่าย · 30 ห้อง/10 นาที/IP</p>
+            <p className="transfer-limit-note">N2N v1.4.2 · DataChannel ใหม่ต้องยืนยัน E2E ภายใน 5 นาที · 30 ห้อง/10 นาที/IP</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
