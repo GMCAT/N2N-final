@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useLiveRoom } from "@/hooks/useLiveRoom";
 
 type Mode = "choose" | "receive";
@@ -50,9 +50,39 @@ export function PairingApp() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [copied, setCopied] = useState(false);
   const live = useLiveRoom(session, peerPublicKey);
   const queueId = queue?.id;
   const queueToken = queue?.token;
+
+  const clearLocalSession = useCallback((message = "") => {
+    setSession(null); setMode("choose"); setRoomStatus("waiting"); setPeerOnline(false);
+    setQueue(null); setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
+    setCopied(false); setNotice(message);
+  }, []);
+
+  useEffect(() => {
+    if (!session || !live.peerLeft) return;
+    const timer = window.setTimeout(
+      () => clearLocalSession("อีกฝ่ายออกจากห้องแล้ว ห้องนี้ถูกปิดอัตโนมัติ"),
+      0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [clearLocalSession, live.peerLeft, session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const closeOnPageExit = () => {
+      void fetch(`/api/rooms/${session.id}/close`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.token}` },
+        keepalive: true,
+      });
+    };
+    window.addEventListener("pagehide", closeOnPageExit);
+    return () => window.removeEventListener("pagehide", closeOnPageExit);
+  }, [session]);
 
   useEffect(() => {
     if (!queueId || !queueToken) return;
@@ -92,18 +122,27 @@ export function PairingApp() {
           setError("");
         }
       } catch (caught) {
-        if (active) setError(caught instanceof Error ? caught.message : "ขาดการเชื่อมต่อกับห้อง");
+        if (active) {
+          const message = caught instanceof Error ? caught.message : "ขาดการเชื่อมต่อกับห้อง";
+          if (/Room is unavailable|ห้อง.*ไม่พร้อม|ห้อง.*ถูกปิด/iu.test(message)) {
+            clearLocalSession("ห้องนี้ถูกปิดหรือหมดอายุแล้ว");
+            active = false;
+          } else {
+            setError(message);
+          }
+        }
       } finally {
         if (active) timer = setTimeout(heartbeat, 15_000);
       }
     }
     void heartbeat();
     return () => { active = false; clearTimeout(timer); };
-  }, [live.channelOpen, session]);
+  }, [clearLocalSession, live.channelOpen, session]);
 
   async function createRoom() {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const room = await responseJson<
         | { queued: true; queueId: string; queueToken: string; position: number; expiresAt: number }
@@ -124,6 +163,7 @@ export function PairingApp() {
     if (code.length !== 8) return;
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const room = await responseJson<{ id: string; receiverToken: string; expiresAt: number }>(
         await fetch("/api/rooms/join", {
@@ -139,11 +179,23 @@ export function PairingApp() {
     } finally { setBusy(false); }
   }
 
-  function reset() {
+  async function reset() {
     if (queue) void fetch(`/api/rooms/queue/${queue.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${queue.token}` } });
-    if (session) void fetch(`/api/rooms/${session.id}/close`, { method: "POST", headers: { Authorization: `Bearer ${session.token}` }, keepalive: true });
-    setSession(null); setMode("choose"); setRoomStatus("waiting"); setPeerOnline(false);
-    setQueue(null); setCodeInput(""); setDraft(""); setFile(null); setError(""); setPeerPublicKey(null); setRoomExpiresAt(0);
+    if (session) {
+      await live.leaveRoom();
+      void fetch(`/api/rooms/${session.id}/close`, { method: "POST", headers: { Authorization: `Bearer ${session.token}` }, keepalive: true });
+    }
+    clearLocalSession();
+  }
+
+  async function copyPairingCode() {
+    try {
+      await navigator.clipboard.writeText(formatCode(code));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      setError("คัดลอกรหัสไม่สำเร็จ กรุณาเลือกรหัสแล้วคัดลอกด้วยตนเอง");
+    }
   }
 
   async function sendCurrent() {
@@ -164,7 +216,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={reset} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.1</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.3.2</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -197,6 +249,7 @@ export function PairingApp() {
               </form>
             )}
             {error && <p className="error-message" role="alert">{error}</p>}
+            {notice && <p className="status-message" role="status">{notice}</p>}
           </div>
         </section>
       ) : (
@@ -205,12 +258,19 @@ export function PairingApp() {
             <p className="eyebrow">{session.role === "sender" ? "YOUR PAIRING CODE" : "CONNECTED WITH CODE"}</p>
             <h1>{session.role === "sender" ? "ส่งรหัสนี้ให้ผู้รับ" : "เข้าห้องแล้ว"}</h1>
             <div className="code-display" aria-label={`รหัสห้อง ${formatCode(session.code)}`}><span>{code.slice(0, 4)}</span><span>{code.slice(4, 8)}</span></div>
+            <button className="copy-code-button" type="button" onClick={() => void copyPairingCode()}>{copied ? "คัดลอกแล้ว ✓" : "คัดลอกรหัส 0000 0000"}</button>
             <div className={`peer-status ${connected ? "is-online" : ""}`}><span aria-hidden="true" /><div><strong>{connected ? "อีกฝ่ายออนไลน์" : "กำลังรออีกฝ่าย"}</strong><small>{connected ? "พร้อมสร้างช่องทางเข้ารหัส" : "เปิดหน้านี้ค้างไว้"}</small></div></div>
             <p className="expiry-note">ห้องหมดอายุ {new Date(roomExpiresAt || session.expiresAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</p>
-            <button className="secondary-button leave-button" onClick={reset}>ออกจากห้อง</button>
+            <button className="secondary-button leave-button" onClick={() => void reset()}>ออกจากห้อง</button>
           </aside>
           <section className="conversation" aria-label="พื้นที่รับส่งข้อมูล">
             <header className="conversation-header"><div><p className="eyebrow">PRIVATE CHANNEL</p><h2>ข้อความและไฟล์</h2></div><span className={`security-chip ${live.ready ? "is-secure" : ""}`}>{live.ready ? "E2E · VERIFIED" : live.channelOpen ? "E2E · VERIFY" : "E2E · CONNECTING"}</span></header>
+            {!live.ready && (
+              <div className="channel-wait-note" role="status">
+                <strong>กรุณารอรับรหัสยืนยันก่อนเริ่มส่งไฟล์</strong>
+                <span>เมื่อรหัสปรากฏ ให้ตรวจว่าตรงกันและกดยืนยันทั้งสองฝ่าย จากนั้นปุ่มส่งไฟล์จะพร้อมใช้งาน</span>
+              </div>
+            )}
             {live.channelOpen && !live.ready && (
               <div className="verify-panel">
                 <div><small>รหัสยืนยันต้องตรงกันทั้งสองหน้าจอ</small><strong>{live.verificationCode || "กำลังสร้าง…"}</strong></div>
@@ -235,7 +295,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.3.1 · ลด polling อัตโนมัติเมื่อ P2P พร้อม · จำกัด 1,000 คำขอสร้างห้อง/วัน · คิวสูงสุด 25</p>
+            <p className="transfer-limit-note">N2N v1.3.2 · ออกจากห้องพร้อมกันทั้งสองฝ่าย · คัดลอกรหัสได้ · จำกัด 1,000 คำขอสร้างห้อง/วัน</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>
