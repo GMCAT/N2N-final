@@ -15,7 +15,7 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.3\.5/u);
+  assert.match(panel, /v1\.3\.6/u);
   assert.match(panel, /copyPairingCode/u);
   assert.match(panel, /กำลังรอรับกุญแจเข้ารหัสจากอีกฝ่าย/u);
   assert.match(panel, /live\.peerLeftRoomId !== session\.id/u);
@@ -24,6 +24,8 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /keyExchangeStatus/u);
   assert.match(panel, /60_000/u);
   assert.match(panel, /\/close/u);
+  assert.match(panel, /filePickerOpenRef/u);
+  assert.match(panel, /onCancel/u);
   assert.doesNotMatch(panel, /window\.confirm/u);
   assert.match(panel, /คุณอยู่ลำดับที่/u);
   assert.match(panel, /\/api\/rooms\/queue/u);
@@ -51,6 +53,7 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /file-resume/u);
   assert.match(live, /kind: "leave"/u);
   assert.match(live, /setPeerLeftRoomId\(session\.id\)/u);
+  assert.doesNotMatch(live, /if \(active && opened\) setPeerLeftRoomId/u);
   assert.match(live, /leaveRoom/u);
   assert.match(live, /handshakeRef/u);
   assert.match(live, /stun:stun\.cloudflare\.com:53/u);

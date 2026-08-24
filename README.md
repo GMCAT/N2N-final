@@ -1,6 +1,6 @@
 # N2N
 
-N2N v1.3.5 is an end-to-end encrypted browser file-transfer service. In the
+N2N v1.3.6 is an end-to-end encrypted browser file-transfer service. In the
 live pairing flow, plaintext files and decryption keys stay on the sender and
 recipient devices. The server stores only short-lived pairing and signaling
 state.

@@ -208,13 +208,13 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     }
 
     function bindChannel(channel: RTCDataChannel) {
-      let opened = false;
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
-      channel.onopen = () => { opened = true; setChannelOpen(true); };
+      channel.onopen = () => { setChannelOpen(true); };
       channel.onclose = () => {
         setChannelOpen(false);
         setPeerConfirmed(false);
-        if (active && opened) setPeerLeftRoomId(session.id);
+        // A mobile browser can suspend WebRTC while its native file picker is
+        // open. Only an authenticated `leave` packet means the peer left.
       };
       channel.onerror = () => setError("ช่องทางรับส่งขัดข้อง");
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
