@@ -215,6 +215,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         setChannelOpen(false);
         // A mobile browser can suspend WebRTC while its native file picker is
         // open. Only an authenticated `leave` packet means the peer left.
+        if (active) scheduleReconnect();
       };
       channel.onerror = () => setError("ช่องทางรับส่งขัดข้อง");
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
@@ -224,7 +225,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       if (!active || reconnecting || negotiationPending || session.role !== "sender" || pc.signalingState === "closed") return;
       reconnecting = true;
       try {
-        if (!channelRef.current || channelRef.current.readyState === "closed") {
+        if (!channelRef.current || channelRef.current.readyState !== "open") {
           const replacement = pc.createDataChannel("n2n-live", { ordered: true });
           bindChannel(replacement);
         }
