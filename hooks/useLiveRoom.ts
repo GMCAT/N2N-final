@@ -154,8 +154,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
   useEffect(() => {
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
-    let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>;
-    let reconnecting = false;
+    let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>; let negotiationTimer: ReturnType<typeof setTimeout>;
+    let reconnecting = false; let negotiationPending = false;
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
@@ -221,7 +221,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     }
     pc.onicecandidate = (event) => { if (event.candidate) void publish("ice", event.candidate.toJSON()).catch(() => setError("ส่งข้อมูลเชื่อมต่อไม่สำเร็จ")); };
     async function reconnect() {
-      if (!active || reconnecting || session.role !== "sender" || pc.signalingState === "closed") return;
+      if (!active || reconnecting || negotiationPending || session.role !== "sender" || pc.signalingState === "closed") return;
       reconnecting = true;
       try {
         if (!channelRef.current || channelRef.current.readyState === "closed") {
@@ -231,6 +231,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         pc.restartIce();
         const offer = await pc.createOffer({ iceRestart: true });
         await pc.setLocalDescription(offer);
+        negotiationPending = true;
+        clearTimeout(negotiationTimer);
+        negotiationTimer = setTimeout(() => { negotiationPending = false; scheduleReconnect(); }, 10_000);
         await publish("offer", pc.localDescription);
       } catch (caught) {
         if (active) setError(caught instanceof Error ? caught.message : "เชื่อมต่อช่องทางอีกครั้งไม่สำเร็จ");
@@ -251,7 +254,12 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     pc.ondatachannel = (event) => bindChannel(event.channel);
     async function applySignal(signal: Signal) {
       if (signal.kind === "offer" && session.role === "receiver") { await pc.setRemoteDescription(signal.payload as RTCSessionDescriptionInit); for (const c of pendingIce.splice(0)) await pc.addIceCandidate(c); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); await publish("answer", pc.localDescription); }
-      else if (signal.kind === "answer" && session.role === "sender") { await pc.setRemoteDescription(signal.payload as RTCSessionDescriptionInit); for (const c of pendingIce.splice(0)) await pc.addIceCandidate(c); }
+      else if (signal.kind === "answer" && session.role === "sender") {
+        if (pc.signalingState !== "have-local-offer") return;
+        await pc.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
+        negotiationPending = false; clearTimeout(negotiationTimer);
+        for (const c of pendingIce.splice(0)) await pc.addIceCandidate(c);
+      }
       else if (signal.kind === "ice") { const c = signal.payload as RTCIceCandidateInit; if (pc.remoteDescription) await pc.addIceCandidate(c); else pendingIce.push(c); }
       else if (signal.kind === "bye") pc.close();
     }
@@ -259,8 +267,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     const reconnectWhenVisible = () => { if (document.visibilityState === "visible" && (!channelRef.current || channelRef.current.readyState !== "open")) scheduleReconnect(); };
     document.addEventListener("visibilitychange", reconnectWhenVisible);
     window.addEventListener("focus", reconnectWhenVisible);
-    void (async () => { if (session.role === "sender") { const channel = pc.createDataChannel("n2n-live", { ordered: true }); bindChannel(channel); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); await publish("offer", pc.localDescription); } await poll(); })().catch((caught) => setError(caught instanceof Error ? caught.message : "เปิดช่องทางรับส่งไม่สำเร็จ"));
-    return () => { active = false; clearTimeout(pollTimer); clearTimeout(reconnectTimer); document.removeEventListener("visibilitychange", reconnectWhenVisible); window.removeEventListener("focus", reconnectWhenVisible); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
+    void (async () => { if (session.role === "sender") { const channel = pc.createDataChannel("n2n-live", { ordered: true }); bindChannel(channel); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); negotiationPending = true; clearTimeout(negotiationTimer); negotiationTimer = setTimeout(() => { negotiationPending = false; scheduleReconnect(); }, 10_000); await publish("offer", pc.localDescription); } await poll(); })().catch((caught) => setError(caught instanceof Error ? caught.message : "เปิดช่องทางรับส่งไม่สำเร็จ"));
+    return () => { active = false; clearTimeout(pollTimer); clearTimeout(reconnectTimer); clearTimeout(negotiationTimer); document.removeEventListener("visibilitychange", reconnectWhenVisible); window.removeEventListener("focus", reconnectWhenVisible); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
   }, [cryptoRoomId, encryptionKey, sendPacket, session]);
 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
