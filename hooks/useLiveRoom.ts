@@ -154,7 +154,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
   useEffect(() => {
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
-    let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>;
+    let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>;
+    let reconnecting = false;
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
@@ -209,10 +210,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
     function bindChannel(channel: RTCDataChannel) {
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
-      channel.onopen = () => { setChannelOpen(true); };
+      channel.onopen = () => { setChannelOpen(true); setError(""); };
       channel.onclose = () => {
         setChannelOpen(false);
-        setPeerConfirmed(false);
         // A mobile browser can suspend WebRTC while its native file picker is
         // open. Only an authenticated `leave` packet means the peer left.
       };
@@ -220,8 +220,32 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
     }
     pc.onicecandidate = (event) => { if (event.candidate) void publish("ice", event.candidate.toJSON()).catch(() => setError("ส่งข้อมูลเชื่อมต่อไม่สำเร็จ")); };
+    async function reconnect() {
+      if (!active || reconnecting || session.role !== "sender" || pc.signalingState === "closed") return;
+      reconnecting = true;
+      try {
+        if (!channelRef.current || channelRef.current.readyState === "closed") {
+          const replacement = pc.createDataChannel("n2n-live", { ordered: true });
+          bindChannel(replacement);
+        }
+        pc.restartIce();
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        await publish("offer", pc.localDescription);
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "เชื่อมต่อช่องทางอีกครั้งไม่สำเร็จ");
+      } finally {
+        reconnecting = false;
+      }
+    }
+    function scheduleReconnect() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => { void reconnect(); }, 1_500);
+    }
     pc.onconnectionstatechange = () => {
       if (["failed", "closed", "disconnected"].includes(pc.connectionState)) setChannelOpen(false);
+      if (["failed", "disconnected"].includes(pc.connectionState)) scheduleReconnect();
+      if (pc.connectionState === "connected") { clearTimeout(reconnectTimer); setError(""); }
       if (pc.connectionState === "failed") setError("เครือข่ายนี้อาจปิดกั้น WebRTC P2P กรุณาลองเครือข่ายอื่น");
     };
     pc.ondatachannel = (event) => bindChannel(event.channel);
@@ -231,9 +255,12 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       else if (signal.kind === "ice") { const c = signal.payload as RTCIceCandidateInit; if (pc.remoteDescription) await pc.addIceCandidate(c); else pendingIce.push(c); }
       else if (signal.kind === "bye") pc.close();
     }
-    async function poll() { try { const result = await json<{ signals: Signal[]; cursor: number }>(await fetch(`/api/rooms/${session.id}/signals?after=${cursor}`, { headers: { Authorization: `Bearer ${session.token}` } })); for (const signal of result.signals) await applySignal(signal); cursor = result.cursor; } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "Signaling ขัดข้อง"); } finally { if (active && pc.connectionState !== "connected") pollTimer = setTimeout(poll, 850); } }
+    async function poll() { try { const result = await json<{ signals: Signal[]; cursor: number }>(await fetch(`/api/rooms/${session.id}/signals?after=${cursor}`, { headers: { Authorization: `Bearer ${session.token}` } })); for (const signal of result.signals) await applySignal(signal); cursor = result.cursor; } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "Signaling ขัดข้อง"); } finally { if (active) pollTimer = setTimeout(poll, pc.connectionState === "connected" ? 3_000 : 850); } }
+    const reconnectWhenVisible = () => { if (document.visibilityState === "visible" && (!channelRef.current || channelRef.current.readyState !== "open")) scheduleReconnect(); };
+    document.addEventListener("visibilitychange", reconnectWhenVisible);
+    window.addEventListener("focus", reconnectWhenVisible);
     void (async () => { if (session.role === "sender") { const channel = pc.createDataChannel("n2n-live", { ordered: true }); bindChannel(channel); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); await publish("offer", pc.localDescription); } await poll(); })().catch((caught) => setError(caught instanceof Error ? caught.message : "เปิดช่องทางรับส่งไม่สำเร็จ"));
-    return () => { active = false; clearTimeout(pollTimer); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
+    return () => { active = false; clearTimeout(pollTimer); clearTimeout(reconnectTimer); document.removeEventListener("visibilitychange", reconnectWhenVisible); window.removeEventListener("focus", reconnectWhenVisible); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
   }, [cryptoRoomId, encryptionKey, sendPacket, session]);
 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
