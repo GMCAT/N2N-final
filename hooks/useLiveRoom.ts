@@ -9,9 +9,10 @@ export type IncomingOffer = { id: string; name: string; mime: string; size: numb
 export type TransferStats = { fileName: string; totalBytes: number; transferredBytes: number; mbps: number; etaSeconds: number | null };
 
 type Packet =
-  | { kind: "confirm" }
+  | { kind: "confirm"; epoch: string }
   | { kind: "leave" }
   | { kind: "picker-status"; active: boolean }
+  | { kind: "reverify"; epoch: string; code: string }
   | { kind: "text"; id: string; body: string; createdAt: number }
   | { kind: "file-offer"; id: string; name: string; mime: string; size: number; chunks: number; createdAt: number }
   | { kind: "file-ready"; id: string; mode: "disk" | "memory" }
@@ -61,6 +62,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const transferPausedRef = useRef(false);
   const peerPausedRef = useRef(false);
   const filePickerActiveRef = useRef(false);
+  const verificationEpochRef = useRef("");
+  const pendingReverifyRef = useRef<{ kind: "reverify"; epoch: string; code: string } | null>(null);
   const transferCancelledRef = useRef(false);
   const activeTransferRef = useRef<{ id: string; direction: "sending" | "receiving" } | null>(null);
   const metricRef = useRef({ lastAt: 0, lastBytes: 0, smoothedMbps: 0 });
@@ -143,7 +146,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     let active = true;
     void deriveLiveSession(localPair.keyPair.privateKey, effectivePeerPublicKey, roomId).then((derived) => {
       if (!active) return;
-      keyRef.current = derived.encryptionKey; setEncryptionKey(derived.encryptionKey); setCryptoRoomId(roomId); setVerificationCode(derived.verificationCode);
+      keyRef.current = derived.encryptionKey; verificationEpochRef.current = `room:${roomId}`; setEncryptionKey(derived.encryptionKey); setCryptoRoomId(roomId); setVerificationCode(derived.verificationCode);
     }).catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจร่วมไม่สำเร็จ"); });
     return () => { active = false; };
   }, [effectivePeerPublicKey, localPair, roomId]);
@@ -172,8 +175,12 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         pcRef.current?.close();
         return;
       }
-      if (packet.kind === "confirm") { setPeerConfirmed(true); return; }
+      if (packet.kind === "confirm") { if (packet.epoch === verificationEpochRef.current) setPeerConfirmed(true); return; }
       if (packet.kind === "picker-status") { setPeerSelectingFile(packet.active); return; }
+      if (packet.kind === "reverify") {
+        if (verificationEpochRef.current.startsWith("reverify:") && packet.epoch < verificationEpochRef.current) return;
+        verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); return;
+      }
       if (packet.kind === "text") { if (packet.body.length > 20_000) throw new Error("ข้อความยาวเกินกำหนด"); setMessages((v) => [...v, { id: packet.id, direction: "received", kind: "text", text: packet.body, createdAt: packet.createdAt }]); return; }
       if (packet.kind === "file-offer") {
         if (!Number.isSafeInteger(packet.size) || packet.size < 0 || !Number.isSafeInteger(packet.chunks) || packet.chunks !== Math.ceil(packet.size / CHUNK_SIZE)) throw new Error("ข้อมูลไฟล์ไม่ถูกต้อง");
@@ -214,7 +221,11 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
     function bindChannel(channel: RTCDataChannel) {
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
-      channel.onopen = () => { setChannelOpen(true); setError(""); void sendPacket({ kind: "picker-status", active: filePickerActiveRef.current }).catch(() => undefined); };
+      channel.onopen = () => {
+        setChannelOpen(true); setError("");
+        void sendPacket({ kind: "picker-status", active: filePickerActiveRef.current }).catch(() => undefined);
+        if (pendingReverifyRef.current) void sendPacket(pendingReverifyRef.current).then(() => { pendingReverifyRef.current = null; }).catch(() => undefined);
+      };
       channel.onclose = () => {
         setChannelOpen(false);
         // A mobile browser can suspend WebRTC while its native file picker is
@@ -278,10 +289,19 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
 
-  async function confirmPeer() { await sendPacket({ kind: "confirm" }); setLocalConfirmed(true); }
+  async function confirmPeer() { await sendPacket({ kind: "confirm", epoch: verificationEpochRef.current }); setLocalConfirmed(true); }
   const announceFilePicker = useCallback(async (active: boolean) => {
     filePickerActiveRef.current = active;
     try { await sendPacket({ kind: "picker-status", active }); } catch { /* reconnect publishes the current state */ }
+  }, [sendPacket]);
+  const requestFileVerification = useCallback(async () => {
+    const bytes = crypto.getRandomValues(new Uint8Array(4));
+    const number = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0) % 1_000_000;
+    const digits = number.toString().padStart(6, "0");
+    const packet = { kind: "reverify" as const, epoch: `reverify:${crypto.randomUUID()}`, code: `${digits.slice(0, 3)} ${digits.slice(3)}` };
+    verificationEpochRef.current = packet.epoch; pendingReverifyRef.current = packet;
+    setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false);
+    try { await sendPacket(packet); pendingReverifyRef.current = null; } catch { /* sent after reconnect */ }
   }, [sendPacket]);
   async function leaveRoom() {
     if (channelRef.current?.readyState !== "open" || !keyRef.current) return;
@@ -339,5 +359,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, peerSelectingFile, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, announceFilePicker, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, peerSelectingFile, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, announceFilePicker, requestFileVerification, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }
