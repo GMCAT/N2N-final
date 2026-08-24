@@ -54,6 +54,7 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /handshakeRef/u);
   assert.match(live, /stun:stun\.cloudflare\.com:53/u);
   assert.match(live, /retrying/u);
+  assert.match(live, /handshakePeer && handshakePeer\.roomId === roomId/u);
   assert.match(rooms, /expires_at = \?/u);
   assert.match(rooms, /MAX_ACTIVE_ROOMS = 1024/u);
   assert.match(rooms, /MAX_DAILY_ROOM_REQUESTS = 1000/u);

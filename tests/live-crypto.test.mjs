@@ -14,6 +14,6 @@ test("derives matching E2E keys and verification codes for a paired room", async
   assert.deepEqual(await decryptLivePacket(receiverSession.encryptionKey, "room-1", encrypted), { kind: "text", body: "secret" });
   await assert.rejects(() => decryptLivePacket(receiverSession.encryptionKey, "another-room", encrypted));
   const altered = JSON.parse(encrypted);
-  altered.data = `${altered.data.slice(0, -1)}${altered.data.endsWith("A") ? "B" : "A"}`;
+  altered.data = `${altered.data.startsWith("A") ? "B" : "A"}${altered.data.slice(1)}`;
   await assert.rejects(() => decryptLivePacket(receiverSession.encryptionKey, "room-1", JSON.stringify(altered)));
 });

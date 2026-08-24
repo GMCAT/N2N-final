@@ -82,7 +82,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [error, setError] = useState("");
   const roomId = session?.id;
   const roomToken = session?.token;
-  const effectivePeerPublicKey = peerPublicKey ?? (handshakePeer?.roomId === roomId ? handshakePeer.publicKey : null);
+  const effectivePeerPublicKey = peerPublicKey
+    ?? (handshakePeer && handshakePeer.roomId === roomId ? handshakePeer.publicKey : null);
 
   function beginMetrics(fileName: string, totalBytes: number) {
     metricRef.current = { lastAt: performance.now(), lastBytes: 0, smoothedMbps: 0 };
