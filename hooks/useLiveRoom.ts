@@ -10,6 +10,7 @@ export type TransferStats = { fileName: string; totalBytes: number; transferredB
 
 type Packet =
   | { kind: "confirm" }
+  | { kind: "leave" }
   | { kind: "text"; id: string; body: string; createdAt: number }
   | { kind: "file-offer"; id: string; name: string; mime: string; size: number; chunks: number; createdAt: number }
   | { kind: "file-ready"; id: string; mode: "disk" | "memory" }
@@ -69,6 +70,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [channelOpen, setChannelOpen] = useState(false);
   const [localConfirmed, setLocalConfirmed] = useState(false);
   const [peerConfirmed, setPeerConfirmed] = useState(false);
+  const [peerLeft, setPeerLeft] = useState(false);
   const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
   const [progress, setProgress] = useState(0);
@@ -108,7 +110,9 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         return pair;
       })() };
     }
-    void handshakeRef.current.promise.then((pair) => { if (active) setLocalPair(pair); })
+    void handshakeRef.current.promise.then((pair) => {
+      if (active) { setPeerLeft(false); setLocalPair(pair); }
+    })
       .catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : "สร้างกุญแจเข้ารหัสไม่สำเร็จ"); });
     return () => { active = false; };
   }, [roomId, roomToken]);
@@ -140,6 +144,12 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     async function receiveEnvelope(data: unknown) {
       if (typeof data !== "string" || !keyRef.current) return;
       const packet = await decryptLivePacket<Packet>(keyRef.current, session.id, data);
+      if (packet.kind === "leave") {
+        setPeerLeft(true);
+        channelRef.current?.close();
+        pcRef.current?.close();
+        return;
+      }
       if (packet.kind === "confirm") { setPeerConfirmed(true); return; }
       if (packet.kind === "text") { if (packet.body.length > 20_000) throw new Error("ข้อความยาวเกินกำหนด"); setMessages((v) => [...v, { id: packet.id, direction: "received", kind: "text", text: packet.body, createdAt: packet.createdAt }]); return; }
       if (packet.kind === "file-offer") {
@@ -180,9 +190,14 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     }
 
     function bindChannel(channel: RTCDataChannel) {
+      let opened = false;
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
-      channel.onopen = () => setChannelOpen(true);
-      channel.onclose = () => { setChannelOpen(false); setPeerConfirmed(false); };
+      channel.onopen = () => { opened = true; setChannelOpen(true); };
+      channel.onclose = () => {
+        setChannelOpen(false);
+        setPeerConfirmed(false);
+        if (active && opened) setPeerLeft(true);
+      };
       channel.onerror = () => setError("ช่องทางรับส่งขัดข้อง");
       channel.onmessage = (event) => { receiveQueue.current = receiveQueue.current.then(() => receiveEnvelope(event.data)).catch((caught) => setError(caught instanceof Error ? caught.message : "ถอดรหัสข้อมูลไม่สำเร็จ")); };
     }
@@ -203,6 +218,16 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
 
   async function confirmPeer() { await sendPacket({ kind: "confirm" }); setLocalConfirmed(true); }
+  async function leaveRoom() {
+    if (channelRef.current?.readyState !== "open" || !keyRef.current) return;
+    try {
+      await sendPacket({ kind: "leave" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch {
+      // Closing the data channel still notifies the peer when the leave packet
+      // cannot be queued.
+    }
+  }
   async function sendText(body: string) { if (!localConfirmed || !peerConfirmed) throw new Error("กรุณายืนยันรหัสทั้งสองฝ่ายก่อนส่ง"); if (!body || body.length > 20_000) throw new Error("ข้อความต้องไม่เกิน 20,000 ตัวอักษร"); const id = crypto.randomUUID(); const createdAt = Date.now(); await sendPacket({ kind: "text", id, body, createdAt }); setMessages((v) => [...v, { id, direction: "sent", kind: "text", text: body, createdAt }]); }
 
   async function acceptIncomingFile() {
@@ -249,5 +274,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode, localConfirmed, peerConfirmed, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, verificationCode, localConfirmed, peerConfirmed, peerLeft, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }
