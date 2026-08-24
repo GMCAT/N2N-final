@@ -15,7 +15,7 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.3\.9/u);
+  assert.match(panel, /v1\.4\.0/u);
   assert.match(panel, /copyPairingCode/u);
   assert.match(panel, /กำลังรอรับกุญแจเข้ารหัสจากอีกฝ่าย/u);
   assert.match(panel, /live\.peerLeftRoomId !== session\.id/u);
@@ -35,6 +35,7 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /Mbps/u);
   assert.match(panel, /formatEta/u);
   assert.match(panel, /acceptIncomingFile/u);
+  assert.match(panel, /announceFilePicker/u);
   assert.doesNotMatch(page + panel, /codex-preview|react-loading-skeleton/u);
 });
 
@@ -64,6 +65,8 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /pc\.signalingState !== "have-local-offer"/u);
   assert.match(live, /channelRef\.current\.readyState !== "open"/u);
   assert.match(live, /if \(active\) scheduleReconnect\(\)/u);
+  assert.match(live, /picker-status/u);
+  assert.match(live, /peerSelectingFile/u);
   assert.match(live, /visibilitychange/u);
   assert.match(live, /pc\.connectionState === "connected" \? 3_000 : 850/u);
   assert.match(live, /handshakePeer && handshakePeer\.roomId === roomId/u);
