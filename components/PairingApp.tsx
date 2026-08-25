@@ -159,7 +159,7 @@ export function PairingApp() {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function heartbeat() {
-      const nextDelay = 30_000;
+      let nextDelay = live.channelOpen ? 30_000 : 2_000;
       try {
         const status = await responseJson<{ status: RoomStatus; peerOnline: boolean; peerPublicKey: string | null; expiresAt: number }>(
           await fetch(`/api/rooms/${session?.id}/heartbeat`, {
@@ -171,6 +171,7 @@ export function PairingApp() {
           setRoomStatus(status.status);
           setPeerOnline(status.peerOnline);
           setPeerPublicKey(status.peerPublicKey);
+          nextDelay = live.channelOpen ? 30_000 : status.peerPublicKey ? 5_000 : 2_000;
           setRoomExpiresAt(status.expiresAt);
           setError("");
         }
@@ -190,7 +191,7 @@ export function PairingApp() {
     }
     void heartbeat();
     return () => { active = false; clearTimeout(timer); };
-  }, [clearLocalSession, session]);
+  }, [clearLocalSession, live.channelOpen, session]);
 
   async function createRoom() {
     if (createInFlightRef.current) return;
@@ -271,7 +272,7 @@ export function PairingApp() {
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.5.0</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.5.1</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -351,7 +352,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.5.0 · P2P keepalive 5 วินาที · Server heartbeat 30 วินาที · 30 ห้อง/10 นาที/IP</p>
+            <p className="transfer-limit-note">N2N v1.5.1 · จับคู่เร็ว · P2P keepalive 5 วินาที · Server heartbeat 30 วินาที</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>

@@ -168,7 +168,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   useEffect(() => {
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
     let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>; let negotiationTimer: ReturnType<typeof setTimeout>;
-    let reconnecting = false; let negotiationPending = false; let needsReverification = false; let polling = false; let signalPollBackoff = 1_000; let lastPeerActivity = Date.now(); let p2pTimedOut = false;
+    let reconnecting = false; let negotiationPending = false; let needsReverification = false; let polling = false; let signalPollBackoff = 1_000; let lastPeerActivity = Date.now(); let p2pTimedOut = false; let hasOpenedChannel = false;
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
@@ -262,7 +262,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     function bindChannel(channel: RTCDataChannel) {
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
       channel.onopen = () => {
-        lastPeerActivity = Date.now(); p2pTimedOut = false; setChannelOpen(true); setConnectionHealth("stable"); setError("");
+        hasOpenedChannel = true; lastPeerActivity = Date.now(); p2pTimedOut = false; setChannelOpen(true); setConnectionHealth("stable"); setError("");
         startReverificationIfReady();
       };
       channel.onclose = () => {
@@ -330,7 +330,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         for (const signal of result.signals) await applySignal(signal);
         cursor = result.cursor;
         if (result.signals.length > 0) signalPollBackoff = 1_000;
-        if (pc.connectionState !== "connected") { nextDelay = signalPollBackoff; signalPollBackoff = Math.min(30_000, signalPollBackoff * 2); }
+        if (!hasOpenedChannel) nextDelay = 850;
+        else if (pc.connectionState !== "connected") { nextDelay = signalPollBackoff; signalPollBackoff = Math.min(30_000, signalPollBackoff * 2); }
         else if (!verifiedRef.current) nextDelay = 3_000;
       } catch (caught) {
         nextDelay = signalPollBackoff; signalPollBackoff = Math.min(30_000, signalPollBackoff * 2);

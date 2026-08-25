@@ -15,7 +15,8 @@ test("pairing UI creates or joins an eight-digit live room", async () => {
   assert.match(panel, /inputMode="numeric"/u);
   assert.match(panel, /useLiveRoom/u);
   assert.match(panel, /รหัสยืนยันต้องตรงกัน/u);
-  assert.match(panel, /v1\.5\.0/u);
+  assert.match(panel, /v1\.5\.1/u);
+  assert.match(panel, /live\.channelOpen \? 30_000 : 2_000/u);
   assert.match(panel, /30_000/u);
   assert.match(panel, /connectionHealth/u);
   assert.match(panel, /copyPairingCode/u);
@@ -75,6 +76,8 @@ test("v1.1 streams large files with receiver consent and backpressure", async ()
   assert.match(live, /15_000/u);
   assert.match(live, /60_000/u);
   assert.match(live, /signalPollBackoff/u);
+  assert.match(live, /hasOpenedChannel/u);
+  assert.match(live, /nextDelay = 850/u);
   assert.match(live, /verificationEpochRef/u);
   assert.match(live, /needsReverification/u);
   assert.match(live, /invalidateVerification/u);
