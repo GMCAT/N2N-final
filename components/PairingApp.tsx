@@ -155,11 +155,11 @@ export function PairingApp() {
   }, [queueId, queueToken]);
 
   useEffect(() => {
-    if (!session || live.channelOpen) return;
+    if (!session) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function heartbeat() {
-      let nextDelay = 15_000;
+      const nextDelay = 30_000;
       try {
         const status = await responseJson<{ status: RoomStatus; peerOnline: boolean; peerPublicKey: string | null; expiresAt: number }>(
           await fetch(`/api/rooms/${session?.id}/heartbeat`, {
@@ -171,7 +171,6 @@ export function PairingApp() {
           setRoomStatus(status.status);
           setPeerOnline(status.peerOnline);
           setPeerPublicKey(status.peerPublicKey);
-          nextDelay = status.peerPublicKey ? 5_000 : 2_000;
           setRoomExpiresAt(status.expiresAt);
           setError("");
         }
@@ -191,7 +190,7 @@ export function PairingApp() {
     }
     void heartbeat();
     return () => { active = false; clearTimeout(timer); };
-  }, [clearLocalSession, live.channelOpen, session]);
+  }, [clearLocalSession, session]);
 
   async function createRoom() {
     if (createInFlightRef.current) return;
@@ -266,13 +265,13 @@ export function PairingApp() {
     }
   }
 
-  const connected = roomStatus === "connected" && peerOnline;
+  const connected = roomStatus === "connected" && (live.channelOpen || peerOnline);
   const code = session?.code ?? "";
 
   return (
     <main className="pair-shell">
       <nav className="topbar pair-topbar" aria-label="เมนูหลัก">
-        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.4.3</small></button>
+        <button className="brand brand-button" onClick={() => void reset()} aria-label="กลับหน้าแรก">N2N<span>.</span><small className="version-mark">v1.5.0</small></button>
         <div className={`live-pill ${connected ? "is-online" : ""}`}><span aria-hidden="true" />{connected ? "เชื่อมต่อแล้ว" : session ? "กำลังรออีกฝ่าย" : "พร้อมจับคู่"}</div>
       </nav>
 
@@ -321,6 +320,7 @@ export function PairingApp() {
           </aside>
           <section className="conversation" aria-label="พื้นที่รับส่งข้อมูล">
             <header className="conversation-header"><div><p className="eyebrow">PRIVATE CHANNEL</p><h2>ข้อความและไฟล์</h2></div><span className={`security-chip ${live.ready ? "is-secure" : ""}`}>{live.ready ? "E2E · VERIFIED" : live.channelOpen ? "E2E · VERIFY" : "E2E · CONNECTING"}</span></header>
+            {live.connectionHealth === "unstable" && <div className="verification-banner" role="status"><strong>การเชื่อมต่อไม่เสถียร</strong><span>ระบบกำลังตรวจสอบอีกฝ่าย หากไม่ตอบภายใน 15 วินาทีจะเชื่อมต่อใหม่อัตโนมัติ</span></div>}
             {!live.ready && (
               <div className="channel-wait-note" role="status">
                 <strong>{live.verificationCode ? "ตรวจรหัสยืนยันให้ตรงกัน" : "กำลังรอรับกุญแจเข้ารหัสจากอีกฝ่าย"}</strong>
@@ -351,7 +351,7 @@ export function PairingApp() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing && live.ready && live.progress === 0 && (draft.trim() || file)) { event.preventDefault(); void sendCurrent(); } }} disabled={!live.ready} placeholder={live.ready ? "พิมพ์ข้อความ… · Shift + Enter เพื่อส่ง" : "รอการยืนยันช่องทาง"} aria-keyshortcuts="Shift+Enter" maxLength={20_000} rows={2} />
               <button className="send-now-button" onClick={() => void sendCurrent()} disabled={!live.ready || (!draft.trim() && !file) || live.progress > 0}>ส่ง</button>
             </div>
-            <p className="transfer-limit-note">N2N v1.4.3 · เชื่อมต่อใหม่ต้องยืนยัน E2E ภายใน 5 นาที · 30 ห้อง/10 นาที/IP</p>
+            <p className="transfer-limit-note">N2N v1.5.0 · P2P keepalive 5 วินาที · Server heartbeat 30 วินาที · 30 ห้อง/10 นาที/IP</p>
             {(error || live.error) && <p className="error-message room-error" role="alert">{error || live.error}</p>}
           </section>
         </section>

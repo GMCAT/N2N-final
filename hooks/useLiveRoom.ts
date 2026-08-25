@@ -11,6 +11,8 @@ export type TransferStats = { fileName: string; totalBytes: number; transferredB
 type Packet =
   | { kind: "confirm"; epoch: string }
   | { kind: "leave" }
+  | { kind: "ping"; sentAt: number }
+  | { kind: "pong"; sentAt: number }
   | { kind: "reverify-request" }
   | { kind: "reverify"; epoch: string; code: string }
   | { kind: "text"; id: string; body: string; createdAt: number }
@@ -62,6 +64,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const transferPausedRef = useRef(false);
   const peerPausedRef = useRef(false);
   const verificationEpochRef = useRef("");
+  const verifiedRef = useRef(false);
   const verificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transferCancelledRef = useRef(false);
   const activeTransferRef = useRef<{ id: string; direction: "sending" | "receiving" } | null>(null);
@@ -74,6 +77,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const [verificationCode, setVerificationCode] = useState("");
   const [keyExchangeStatus, setKeyExchangeStatus] = useState<"idle" | "sending" | "retrying" | "ready">("idle");
   const [channelOpen, setChannelOpen] = useState(false);
+  const [connectionHealth, setConnectionHealth] = useState<"connecting" | "stable" | "unstable" | "reconnecting">("connecting");
   const [localConfirmed, setLocalConfirmed] = useState(false);
   const [peerConfirmed, setPeerConfirmed] = useState(false);
   const [peerLeftRoomId, setPeerLeftRoomId] = useState<string | null>(null);
@@ -90,6 +94,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   const roomToken = session?.token;
   const effectivePeerPublicKey = peerPublicKey
     ?? (handshakePeer && handshakePeer.roomId === roomId ? handshakePeer.publicKey : null);
+
+  useEffect(() => { verifiedRef.current = channelOpen && localConfirmed && peerConfirmed; }, [channelOpen, localConfirmed, peerConfirmed]);
 
   function beginMetrics(fileName: string, totalBytes: number) {
     metricRef.current = { lastAt: performance.now(), lastBytes: 0, smoothedMbps: 0 };
@@ -162,7 +168,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   useEffect(() => {
     if (!session || !encryptionKey || cryptoRoomId !== session.id || pcRef.current) return;
     let active = true; let cursor = 0; let pollTimer: ReturnType<typeof setTimeout>; let reconnectTimer: ReturnType<typeof setTimeout>; let negotiationTimer: ReturnType<typeof setTimeout>;
-    let reconnecting = false; let negotiationPending = false; let needsReverification = false;
+    let reconnecting = false; let negotiationPending = false; let needsReverification = false; let polling = false; let signalPollBackoff = 1_000; let lastPeerActivity = Date.now(); let p2pTimedOut = false;
     const pendingIce: RTCIceCandidateInit[] = [];
     const pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }] }); pcRef.current = pc;
     async function publish(kind: Signal["kind"], payload: unknown) { await json(await fetch(`/api/rooms/${session.id}/signals`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ kind, payload }) })); }
@@ -182,6 +188,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     }
     function invalidateVerification() {
       needsReverification = true;
+      setConnectionHealth("reconnecting");
       setChannelOpen(false); setVerificationCode(""); setLocalConfirmed(false); setPeerConfirmed(false); setVerificationExpiresAt(0);
       if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current);
     }
@@ -200,6 +207,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     async function receiveEnvelope(data: unknown) {
       if (typeof data !== "string" || !keyRef.current) return;
       const packet = await decryptLivePacket<Packet>(keyRef.current, session.id, data);
+      lastPeerActivity = Date.now(); p2pTimedOut = false; setConnectionHealth("stable");
       if (packet.kind === "leave") {
         setPeerLeftRoomId(session.id);
         channelRef.current?.close();
@@ -207,6 +215,8 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         return;
       }
       if (packet.kind === "confirm") { if (packet.epoch === verificationEpochRef.current) setPeerConfirmed(true); return; }
+      if (packet.kind === "ping") { await sendPacket({ kind: "pong", sentAt: packet.sentAt }); return; }
+      if (packet.kind === "pong") return;
       if (packet.kind === "reverify-request") { if (session.role === "sender") { needsReverification = true; startReverificationIfReady(); } return; }
       if (packet.kind === "reverify") {
         verificationEpochRef.current = packet.epoch; setVerificationCode(packet.code); setLocalConfirmed(false); setPeerConfirmed(false); startVerificationDeadline(); return;
@@ -252,7 +262,7 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
     function bindChannel(channel: RTCDataChannel) {
       channelRef.current = channel; channel.bufferedAmountLowThreshold = 256 * 1024;
       channel.onopen = () => {
-        setChannelOpen(true); setError("");
+        lastPeerActivity = Date.now(); p2pTimedOut = false; setChannelOpen(true); setConnectionHealth("stable"); setError("");
         startReverificationIfReady();
       };
       channel.onclose = () => {
@@ -292,10 +302,10 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
       reconnectTimer = setTimeout(() => { void reconnect(); }, 1_500);
     }
     pc.onconnectionstatechange = () => {
-      if (["failed", "disconnected"].includes(pc.connectionState)) invalidateVerification();
+      if (["failed", "disconnected"].includes(pc.connectionState)) { invalidateVerification(); wakeSignalPoll(); }
       if (pc.connectionState === "closed") setChannelOpen(false);
       if (["failed", "disconnected"].includes(pc.connectionState)) scheduleReconnect();
-      if (pc.connectionState === "connected") { clearTimeout(reconnectTimer); setChannelOpen(channelRef.current?.readyState === "open"); setError(""); startReverificationIfReady(); }
+      if (pc.connectionState === "connected") { clearTimeout(reconnectTimer); signalPollBackoff = 1_000; setChannelOpen(channelRef.current?.readyState === "open"); setConnectionHealth("stable"); setError(""); startReverificationIfReady(); }
       if (pc.connectionState === "failed") setError("เครือข่ายนี้อาจปิดกั้น WebRTC P2P กรุณาลองเครือข่ายอื่น");
     };
     pc.ondatachannel = (event) => bindChannel(event.channel);
@@ -306,16 +316,40 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
         await pc.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
         negotiationPending = false; clearTimeout(negotiationTimer);
         for (const c of pendingIce.splice(0)) await pc.addIceCandidate(c);
+        startReverificationIfReady();
       }
       else if (signal.kind === "ice") { const c = signal.payload as RTCIceCandidateInit; if (pc.remoteDescription) await pc.addIceCandidate(c); else pendingIce.push(c); }
       else if (signal.kind === "bye") pc.close();
     }
-    async function poll() { try { const result = await json<{ signals: Signal[]; cursor: number }>(await fetch(`/api/rooms/${session.id}/signals?after=${cursor}`, { headers: { Authorization: `Bearer ${session.token}` } })); for (const signal of result.signals) await applySignal(signal); cursor = result.cursor; } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : "Signaling ขัดข้อง"); } finally { if (active) pollTimer = setTimeout(poll, pc.connectionState === "connected" ? 3_000 : 850); } }
-    const reconnectWhenVisible = () => { if (document.visibilityState === "visible" && (!channelRef.current || channelRef.current.readyState !== "open")) scheduleReconnect(); };
+    async function poll() {
+      if (!active || polling) return;
+      polling = true;
+      let nextDelay = 60_000;
+      try {
+        const result = await json<{ signals: Signal[]; cursor: number }>(await fetch(`/api/rooms/${session.id}/signals?after=${cursor}`, { headers: { Authorization: `Bearer ${session.token}` } }));
+        for (const signal of result.signals) await applySignal(signal);
+        cursor = result.cursor;
+        if (result.signals.length > 0) signalPollBackoff = 1_000;
+        if (pc.connectionState !== "connected") { nextDelay = signalPollBackoff; signalPollBackoff = Math.min(30_000, signalPollBackoff * 2); }
+        else if (!verifiedRef.current) nextDelay = 3_000;
+      } catch (caught) {
+        nextDelay = signalPollBackoff; signalPollBackoff = Math.min(30_000, signalPollBackoff * 2);
+        if (active) setError(caught instanceof Error ? caught.message : "Signaling ขัดข้อง");
+      } finally { polling = false; if (active) pollTimer = setTimeout(poll, nextDelay); }
+    }
+    function wakeSignalPoll() { clearTimeout(pollTimer); signalPollBackoff = 1_000; if (!polling) void poll(); }
+    const reconnectWhenVisible = () => { if (document.visibilityState === "visible" && (!channelRef.current || channelRef.current.readyState !== "open")) { scheduleReconnect(); wakeSignalPoll(); } };
     document.addEventListener("visibilitychange", reconnectWhenVisible);
     window.addEventListener("focus", reconnectWhenVisible);
+    const keepaliveTimer = setInterval(() => {
+      if (!active || channelRef.current?.readyState !== "open") return;
+      const silenceMs = Date.now() - lastPeerActivity;
+      if (silenceMs >= 15_000 && !p2pTimedOut) { p2pTimedOut = true; invalidateVerification(); scheduleReconnect(); wakeSignalPoll(); return; }
+      if (silenceMs >= 10_000) setConnectionHealth("unstable");
+      void sendPacket({ kind: "ping", sentAt: Date.now() }).catch(() => undefined);
+    }, 5_000);
     void (async () => { if (session.role === "sender") { const channel = pc.createDataChannel("n2n-live", { ordered: true }); bindChannel(channel); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); negotiationPending = true; clearTimeout(negotiationTimer); negotiationTimer = setTimeout(() => { negotiationPending = false; scheduleReconnect(); }, 10_000); await publish("offer", pc.localDescription); } await poll(); })().catch((caught) => setError(caught instanceof Error ? caught.message : "เปิดช่องทางรับส่งไม่สำเร็จ"));
-    return () => { active = false; clearTimeout(pollTimer); clearTimeout(reconnectTimer); clearTimeout(negotiationTimer); document.removeEventListener("visibilitychange", reconnectWhenVisible); window.removeEventListener("focus", reconnectWhenVisible); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
+    return () => { active = false; clearTimeout(pollTimer); clearTimeout(reconnectTimer); clearTimeout(negotiationTimer); clearInterval(keepaliveTimer); document.removeEventListener("visibilitychange", reconnectWhenVisible); window.removeEventListener("focus", reconnectWhenVisible); channelRef.current?.close(); pc.close(); pcRef.current = null; setChannelOpen(false); };
   }, [cryptoRoomId, encryptionKey, sendPacket, session]);
 
   useEffect(() => () => { for (const url of urlsRef.current) URL.revokeObjectURL(url); for (const file of incomingFiles.current.values()) void file.writable?.abort?.(); }, []);
@@ -385,5 +419,5 @@ export function useLiveRoom(session: LiveSessionIdentity | null, peerPublicKey: 
   function resumeTransfer() { const active = activeTransferRef.current; if (!active) return; transferPausedRef.current = false; setTransferPaused(peerPausedRef.current); setTransferLabel(peerPausedRef.current ? "รออีกฝ่ายส่งต่อ" : active.direction === "sending" ? "กำลังส่งไฟล์" : "กำลังรับไฟล์"); metricRef.current.lastAt = performance.now(); metricRef.current.lastBytes = transferStats?.transferredBytes ?? 0; void sendPacket({ kind: "file-resume", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ส่งต่อไม่สำเร็จ")); }
   function cancelTransfer() { const active = activeTransferRef.current; if (!active) return; transferCancelledRef.current = true; transferPausedRef.current = false; peerPausedRef.current = false; const incoming = incomingFiles.current.get(active.id); void incoming?.writable?.abort?.(); incomingFiles.current.delete(active.id); activeTransferRef.current = null; setTransferPaused(false); setTransferLabel(""); setProgress(0); setTransferStats(null); void sendPacket({ kind: "file-cancel", id: active.id }).catch((caught) => setError(caught instanceof Error ? caught.message : "ยกเลิกไม่สำเร็จ")); }
 
-  return { channelOpen, verificationCode: cryptoRoomId === roomId ? verificationCode : "", verificationExpiresAt, verificationExpiredRoomId, keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
+  return { channelOpen, connectionHealth, verificationCode: cryptoRoomId === roomId ? verificationCode : "", verificationExpiresAt, verificationExpiredRoomId, keyExchangeStatus, localConfirmed, peerConfirmed, peerLeftRoomId, ready: channelOpen && localConfirmed && peerConfirmed, messages, incomingOffer, progress, transferLabel, transferStats, transferPaused, error, confirmPeer, leaveRoom, sendText, sendFile, acceptIncomingFile, rejectIncomingFile, pauseTransfer, resumeTransfer, cancelTransfer };
 }

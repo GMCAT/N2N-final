@@ -218,7 +218,9 @@ export async function heartbeatRoom(id: string, token: string) {
     id,
     role,
     status: room.status,
-    peerOnline: room.status === "connected" && peerSeenAt !== null && peerSeenAt >= now - 15_000,
+    // P2P keepalive detects a broken peer within 15s. Server heartbeats run
+    // every 30s, so tolerate one delayed heartbeat to avoid false offline UI.
+    peerOnline: room.status === "connected" && peerSeenAt !== null && peerSeenAt >= now - 45_000,
     peerPublicKey,
     expiresAt,
   };
